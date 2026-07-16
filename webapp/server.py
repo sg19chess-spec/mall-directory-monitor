@@ -140,6 +140,10 @@ def api_reconcile():
 
     try:
         result = reconcile_mod.reconcile(mappedin_stores, venue)
+    except reconcile_mod.BotWallError as e:
+        # Transient: the mall's bot challenge blocked us. Distinct from a real
+        # failure — 503 + retryable so the UI can say "try again", not "broken".
+        return jsonify({"error": str(e), "retryable": True}), 503
     except Exception as e:
         return jsonify({"error": f"Simon-site reconciliation check failed: {e}"}), 502
 

@@ -23,6 +23,8 @@ rather than fail the primary Mappedin flow.
 
 import os
 import re
+import time
+import random
 
 HYPERBROWSER_API_KEY = os.environ.get("HYPERBROWSER_API_KEY")
 
@@ -80,29 +82,76 @@ def _parse_simon_stores_page(content: str) -> list[dict]:
     return sorted(stores.values(), key=lambda x: x["name"])
 
 
-def fetch_simon_store_names(venue: str) -> list[dict]:
-    """One page load via Hyperbrowser stealth -> [{name, slug, status}]. Raises
-    on failure (network error, bot wall, or a 0-result parse that likely means
-    the page structure changed and the regex needs updating)."""
+class BotWallError(RuntimeError):
+    """Simon's PerimeterX "Press & Hold" challenge served instead of the page.
+    Distinct from a parse failure: nothing is wrong with our code or their
+    markup, the request simply didn't get through this time."""
+
+
+def _looks_like_bot_wall(markdown: str) -> bool:
+    low = markdown.lower()
+    return (
+        "press & hold" in low
+        or "confirm you are" in low
+        or "access to this page has been denied" in low
+    )
+
+
+def fetch_simon_store_names(venue: str, attempts: int = 3) -> list[dict]:
+    """One page load via Hyperbrowser stealth -> [{name, slug, status}].
+
+    Stealth is PROBABILISTIC, not reliable — observed live: the identical
+    request succeeded (55KB, 61 stores) and then minutes later got served the
+    Press & Hold challenge instead. So retry a few times with backoff before
+    giving up, and distinguish the two failure modes, because they need
+    completely different responses:
+      * BotWallError  -> transient; just try again later. Nothing to fix.
+      * RuntimeError  -> we got a real page but parsed 0 stores, which does
+                         suggest their markup changed and the regex needs work.
+    """
     from hyperbrowser import Hyperbrowser
     from hyperbrowser.models import StartScrapeJobParams, ScrapeOptions
 
     url = simon_url_for_venue(venue)
     client = Hyperbrowser(api_key=HYPERBROWSER_API_KEY)
-    result = client.scrape.start_and_wait(
-        StartScrapeJobParams(
-            url=url,
-            scrape_options=ScrapeOptions(formats=["markdown"]),
-            session_options={"use_stealth": True},
-        )
-    )
-    if result.status != "completed":
-        raise RuntimeError(f"Simon page scrape failed: status={result.status}")
 
-    stores = _parse_simon_stores_page(result.data.markdown or "")
-    if not stores:
-        raise RuntimeError("Simon page scrape returned 0 stores — page structure may have changed")
-    return stores
+    for attempt in range(1, attempts + 1):
+        result = client.scrape.start_and_wait(
+            StartScrapeJobParams(
+                url=url,
+                scrape_options=ScrapeOptions(formats=["markdown"]),
+                session_options={"use_stealth": True},
+            )
+        )
+        if result.status != "completed":
+            if attempt == attempts:
+                raise RuntimeError(f"Simon page scrape failed: status={result.status}")
+            time.sleep(random.uniform(3, 7))
+            continue
+
+        markdown = (result.data.markdown or "") if result.data else ""
+
+        if _looks_like_bot_wall(markdown):
+            if attempt == attempts:
+                raise BotWallError(
+                    f"Simon's bot challenge blocked the check after {attempts} attempts. "
+                    "This is transient — the Mappedin snapshot itself is unaffected; "
+                    "just try the completeness check again in a bit."
+                )
+            time.sleep(random.uniform(4, 9))
+            continue
+
+        stores = _parse_simon_stores_page(markdown)
+        if not stores:
+            # A real page (no bot wall) that yields nothing => our regex is stale.
+            raise RuntimeError(
+                f"Fetched Simon's page ({len(markdown)} chars, no bot challenge) but "
+                "parsed 0 stores — their page structure likely changed and "
+                "_parse_simon_stores_page needs updating."
+            )
+        return stores
+
+    raise BotWallError("Simon page scrape exhausted all attempts.")
 
 
 def reconcile(mappedin_stores: list[dict], venue: str) -> dict:

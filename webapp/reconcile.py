@@ -97,7 +97,7 @@ def _looks_like_bot_wall(markdown: str) -> bool:
     )
 
 
-def fetch_simon_store_names(venue: str, attempts: int = 3) -> list[dict]:
+def fetch_simon_store_names(venue: str, attempts: int = 3, on_progress=None) -> list[dict]:
     """One page load via Hyperbrowser stealth -> [{name, slug, status}].
 
     Stealth is PROBABILISTIC, not reliable — observed live: the identical
@@ -112,10 +112,17 @@ def fetch_simon_store_names(venue: str, attempts: int = 3) -> list[dict]:
     from hyperbrowser import Hyperbrowser
     from hyperbrowser.models import StartScrapeJobParams, ScrapeOptions
 
+    def p(step, msg, **extra):
+        if on_progress:
+            on_progress(step, msg, **extra)
+
     url = simon_url_for_venue(venue)
     client = Hyperbrowser(api_key=HYPERBROWSER_API_KEY)
 
     for attempt in range(1, attempts + 1):
+        p("simon", f"Opening the mall's own website in a real browser"
+                   f"{f' (try {attempt} of {attempts})' if attempt > 1 else ''}…",
+          attempt=attempt)
         result = client.scrape.start_and_wait(
             StartScrapeJobParams(
                 url=url,
@@ -126,6 +133,7 @@ def fetch_simon_store_names(venue: str, attempts: int = 3) -> list[dict]:
         if result.status != "completed":
             if attempt == attempts:
                 raise RuntimeError(f"Simon page scrape failed: status={result.status}")
+            p("simon", f"Page didn't load (status: {result.status}). Retrying…", level="warn")
             time.sleep(random.uniform(3, 7))
             continue
 
@@ -138,9 +146,13 @@ def fetch_simon_store_names(venue: str, attempts: int = 3) -> list[dict]:
                     "This is transient — the Mappedin snapshot itself is unaffected; "
                     "just try the completeness check again in a bit."
                 )
+            p("simon", "Hit the mall site's “Press & Hold” bot check. "
+                       "Backing off and retrying…", level="warn")
             time.sleep(random.uniform(4, 9))
             continue
 
+        p("simon", f"Got through — read {len(markdown)/1024:.0f} KB of the live page.",
+          kb=round(len(markdown)/1024))
         stores = _parse_simon_stores_page(markdown)
         if not stores:
             # A real page (no bot wall) that yields nothing => our regex is stale.
@@ -149,16 +161,19 @@ def fetch_simon_store_names(venue: str, attempts: int = 3) -> list[dict]:
                 "parsed 0 stores — their page structure likely changed and "
                 "_parse_simon_stores_page needs updating."
             )
+        coming = sum(1 for s in stores if s["status"] != "Open")
+        p("simon", f"The website lists {len(stores)} stores ({coming} coming soon).",
+          count=len(stores))
         return stores
 
     raise BotWallError("Simon page scrape exhausted all attempts.")
 
 
-def reconcile(mappedin_stores: list[dict], venue: str) -> dict:
+def reconcile(mappedin_stores: list[dict], venue: str, on_progress=None) -> dict:
     """Compare a Mappedin store list against a fresh Simon-site scrape.
     Returns counts and, by name, which stores exist on the official site but
     are missing from Mappedin (the drift we're actually trying to catch)."""
-    simon_stores = fetch_simon_store_names(venue)
+    simon_stores = fetch_simon_store_names(venue, on_progress=on_progress)
     mappedin_names = {s["name"] for s in mappedin_stores}
     simon_names = {s["name"] for s in simon_stores}
 

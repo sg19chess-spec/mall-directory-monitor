@@ -21,10 +21,13 @@ Render:  gunicorn server:app --bind 0.0.0.0:$PORT   (see render.yaml)
 """
 
 import os
+import time
 import json
+import queue
 import pathlib
 import datetime
-from flask import Flask, request, jsonify, send_from_directory
+import threading
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 
 import mallcore
 import storage
@@ -54,7 +57,7 @@ def index():
 
 @app.get("/api/venues")
 def api_venues():
-    return jsonify(load_venues())
+    return jsonify([mallcore.venue_info(v) for v in load_venues()])
 
 
 @app.get("/api/health")
@@ -73,14 +76,18 @@ def api_runs():
     metas = []
     for d in storage.list_runs(venue):
         ch = d.get("changes") or {}
+        rec = d.get("reconciliation") or {}
         metas.append({
             "id": d.get("id"),
             "venue": d.get("venue"),
-            "generated": d.get("generated"),
+            # older runs predate generated_utc; fall back to their stored string
+            "generated": (mallcore.to_ist_display(d["generated_utc"])
+                          if d.get("generated_utc") else d.get("generated")),
             "count": len(d.get("stores", [])),
             "added": len(ch.get("added", [])),
             "removed": len(ch.get("removed", [])),
             "moved": len(ch.get("moved", [])),
+            "missing": len(rec.get("missing_from_mappedin", [])) if rec else 0,
         })
     metas.reverse()  # newest first
     return jsonify(metas)
@@ -118,6 +125,125 @@ def api_do_run():
     }
     storage.save_run(doc)
     return jsonify(doc)
+
+
+@app.get("/api/run-stream")
+def api_run_stream():
+    """The single 'Run check' action, streamed as Server-Sent Events so the UI
+    can narrate every stage live instead of showing an opaque spinner.
+
+    GET (not POST) because EventSource only does GET. Runs the full pipeline:
+      Mappedin snapshot -> save -> diff vs previous -> reconcile vs mall site.
+    Reconciliation is best-effort: if it's unconfigured or the bot wall wins,
+    the snapshot is still saved and returned. It's a trust layer, not a gate.
+    """
+    venue = request.args.get("venue") or load_venues()[0]
+
+    def sse(event: str, **data) -> str:
+        return f"data: {json.dumps({'event': event, **data})}\n\n"
+
+    @stream_with_context
+    def gen():
+        t0 = time.perf_counter()
+
+        def ms():
+            return round((time.perf_counter() - t0) * 1000)
+
+        # The pipeline runs on a worker thread and pushes events onto this
+        # queue; the response generator drains it. This is what makes the
+        # console genuinely live — emitting only after each call returned
+        # would just dump every line at the end.
+        q: "queue.Queue[tuple | None]" = queue.Queue()
+
+        def emit(event, **data):
+            q.put((event, data))
+
+        def progress(step, msg, **extra):
+            emit("step", step=step, msg=msg, ms=ms(), **extra)
+
+        def worker():
+            try:
+                emit("start", venue=venue, info=mallcore.venue_info(venue), ms=ms())
+
+                # --- Source A: Mappedin (fast, has unit numbers) ---------
+                emit("phase", phase="mappedin", title="Reading the mall's map data", ms=ms())
+                stores = mallcore.parse_mappedin_venue(venue, on_progress=progress)
+                emit("phase_done", phase="mappedin", count=len(stores), ms=ms())
+
+                # --- Save + diff vs previous ----------------------------
+                emit("phase", phase="save", title="Saving snapshot & comparing to last run", ms=ms())
+                prev = storage.latest_for(venue)
+                changes = mallcore.diff_stores(prev.get("stores") if prev else None, stores) if prev else None
+
+                utc = mallcore.now_utc_iso()
+                rid = f"{venue}__{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                doc = {
+                    "id": rid, "venue": venue,
+                    "generated_utc": utc,
+                    "generated": mallcore.to_ist_display(utc),
+                    "method": f"mappedin_api:{venue}",
+                    "stores": stores, "changes": changes,
+                }
+                if changes is None:
+                    progress("save", "First run for this mall — nothing to compare against yet.")
+                else:
+                    n = len(changes["added"]) + len(changes["removed"]) + len(changes["moved"])
+                    progress("save", "No changes since the last run." if n == 0
+                             else f"Found {n} change(s) since the last run.")
+
+                # --- Source B: the mall's own website (trust layer) ------
+                recon = None
+                if reconcile_mod.available():
+                    emit("phase", phase="reconcile", title="Cross-checking against the mall's website", ms=ms())
+                    try:
+                        recon = reconcile_mod.reconcile(stores, venue, on_progress=progress)
+                        recon["checked_at"] = mallcore.to_ist_display(utc)
+                        if recon["in_sync"]:
+                            progress("reconcile", "Both sources agree — nothing missing.", level="good")
+                        else:
+                            progress("reconcile",
+                                     f"{len(recon['missing_from_mappedin'])} store(s) on the website "
+                                     f"aren't in the map data.", level="warn")
+                    except reconcile_mod.BotWallError as e:
+                        recon = {"blocked": True, "error": str(e)}
+                        progress("reconcile", "Blocked by the website's bot check. Snapshot is still "
+                                 "saved — try again later.", level="warn")
+                    except Exception as e:
+                        recon = {"error": str(e)}
+                        progress("reconcile", f"Cross-check failed: {e}", level="warn")
+                else:
+                    progress("reconcile", "Cross-check not configured (no HYPERBROWSER_API_KEY) — skipped.")
+
+                doc["reconciliation"] = recon
+                storage.save_run(doc)
+                emit("done", doc=doc, ms=ms())
+            except Exception as e:
+                emit("error", msg=str(e), ms=ms())
+            finally:
+                q.put(None)  # sentinel: tells the generator we're finished
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        while True:
+            try:
+                item = q.get(timeout=15)
+            except queue.Empty:
+                yield ": keep-alive\n\n"  # stop idle proxies dropping the stream
+                continue
+            if item is None:
+                break
+            event, data = item
+            yield sse(event, **data)
+
+    return Response(
+        gen(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # stop proxies (incl. Render's) buffering the stream
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.post("/api/reconcile")

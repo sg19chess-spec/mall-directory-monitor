@@ -16,7 +16,9 @@ services:
     plan: free
     rootDir: webapp
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT
+    # threads (not just workers) matter here: /api/run-stream holds an SSE
+    # connection open for the whole pipeline, so sync workers alone would block.
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 180
     autoDeploy: true
     envVars:
       - key: DATABASE_URL

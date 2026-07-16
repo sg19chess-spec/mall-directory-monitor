@@ -15,6 +15,49 @@ import io
 import json
 import zipfile
 import urllib.request
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    IST = ZoneInfo("Asia/Kolkata")
+except Exception:  # pragma: no cover - tzdata missing
+    IST = None
+
+
+def now_utc_iso() -> str:
+    """Machine-readable, unambiguous. What we store."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def to_ist_display(utc_iso: str | None) -> str:
+    """Human-readable IST. What we show. Storing UTC + rendering IST keeps the
+    data portable (Render runs in UTC) while the UI stays local to the user."""
+    if not utc_iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(utc_iso)
+    except ValueError:
+        return utc_iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if IST:
+        dt = dt.astimezone(IST)
+    return dt.strftime("%d %b %Y, %I:%M %p IST")
+
+
+def venue_info(venue: str) -> dict:
+    """Human-facing metadata for a venue slug, incl. links back to the mall's
+    own site so the dashboard can always point at its source of truth."""
+    outlet = venue.split("-", 1)[1] if venue.startswith("simon-") else venue
+    pretty = " ".join(w.capitalize() for w in outlet.replace("_", "-").split("-"))
+    base = f"https://www.premiumoutlets.com/outlet/{outlet}"
+    return {
+        "slug": venue,
+        "name": f"{pretty} Premium Outlets",
+        "site": base,
+        "stores_url": f"{base}/stores",
+        "map_url": f"{base}/map/",
+    }
 
 MAPPEDIN_KEY = os.environ.get("MAPPEDIN_KEY", "NTdkMDQ3MjEwMDQyZDUwMmQyMDAwMDAw")
 MAPPEDIN_SECRET = os.environ.get("MAPPEDIN_SECRET", "MjUwM2M3ZjM3N2Y5NzliNWZlYmE4YzU5ZjY2NWE4Y2M=")
@@ -54,11 +97,21 @@ def _status_from_states(states: list[dict] | None) -> str:
     return {"coming-soon": "Coming Soon"}.get(t) or (t.replace("-", " ").title() or "Open")
 
 
-def parse_mappedin_venue(venue: str) -> list[dict]:
+def parse_mappedin_venue(venue: str, on_progress=None) -> list[dict]:
     """Full store directory + unit codes for a Mappedin venue. See the CLI
-    script for the annotated version; this is the same 2-call logic."""
+    script for the annotated version; this is the same 2-call logic.
+
+    on_progress(step_id, message, **extra) is called at each stage so callers
+    (the dashboard's live console) can show what's actually happening instead
+    of a spinner. Optional — the CLI passes nothing and behaves as before.
+    """
+    def p(step, msg, **extra):
+        if on_progress:
+            on_progress(step, msg, **extra)
+
     headers = _mi_headers()
 
+    p("locations", "Asking Mappedin for the venue's store list…")
     loc_url = f"{MAPPEDIN_API}/public/1/location/{venue}?fields=id,externalId,name,type,states"
     locations = json.loads(_http_get(loc_url, headers).decode("utf-8"))
     status_by_name: dict[str, str] = {
@@ -69,7 +122,12 @@ def parse_mappedin_venue(venue: str) -> list[dict]:
     store_names = set(status_by_name)
     if not store_names:
         raise RuntimeError(f"Mappedin returned no stores for venue '{venue}'")
+    coming = sum(1 for v in status_by_name.values() if v != "Open")
+    p("locations", f"Got {len(store_names)} stores ({coming} not yet open). "
+                   f"Filtered out amenities like restrooms and parking.",
+      count=len(store_names))
 
+    p("bundle", "Requesting the venue map bundle (holds the unit numbers)…")
     bundle_meta = json.loads(
         _http_get(f"{MAPPEDIN_API}/exports/mvf2/1/bundle?venue={venue}&version=1.0.0", headers).decode("utf-8")
     )
@@ -80,13 +138,18 @@ def parse_mappedin_venue(venue: str) -> list[dict]:
     if not zip_url:
         raise RuntimeError("Mappedin bundle response contained no zip URL")
 
+    p("bundle", "Downloading the map data zip…")
     zip_bytes = _http_get(zip_url, headers, timeout=120)
+    p("bundle", f"Downloaded {len(zip_bytes)/1024:.0f} KB of map data.", kb=round(len(zip_bytes)/1024))
+
+    p("spaces", "Reading the floor plan to find each store's unit…")
     space_features: list[dict] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         for name in zf.namelist():
             if name.startswith("space/") and name.endswith(".geojson"):
                 data = json.loads(zf.read(name).decode("utf-8"))
                 space_features.extend(data.get("features", []))
+    p("spaces", f"Scanned {len(space_features)} mapped shapes.", features=len(space_features))
 
     unit_by_name: dict[str, str] = {}
     for feat in space_features:
@@ -95,6 +158,8 @@ def parse_mappedin_venue(venue: str) -> list[dict]:
         ext = props.get("externalId")
         if name in store_names and ext and STORE_UNIT_RE.match(ext) and name not in unit_by_name:
             unit_by_name[name] = ext
+    p("spaces", f"Matched {len(unit_by_name)} of {len(store_names)} stores to a unit number.",
+      matched=len(unit_by_name))
 
     stores = []
     for name in sorted(store_names):

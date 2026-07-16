@@ -7,131 +7,240 @@
 <style>
   :root {
     color-scheme: light dark;
-    --bg:#f5f6f8; --panel:#ffffff; --ink:#1b1e24; --muted:#6b7280;
-    --line:#e6e8ec; --line-soft:#eef0f3;
-    --accent:#4f46e5; --accent-soft:#eef2ff; --accent-ink:#3730a3;
-    --good:#15803d; --bad:#b91c1c; --warn:#b45309;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg:#f7f8fa; --bg2:#eef0f4; --panel:#ffffff; --ink:#12151a; --ink2:#3d4653;
+    --muted:#71809a; --line:#e4e8ef; --line2:#eff2f6;
+    --accent:#5b5bd6; --accent2:#7c6cf5; --accent-soft:#eef0fe; --accent-ink:#3730a3;
+    --good:#0f7a45; --good-soft:#e6f6ed;
+    --warn:#a2600a; --warn-soft:#fdf1de;
+    --bad:#b4232a; --bad-soft:#fdeaea;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --r:14px; --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px -12px rgba(16,24,40,.14);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg:#0e1014; --panel:#161a20; --ink:#e7e9ee; --muted:#93a0b0;
-      --line:#262b33; --line-soft:#20242c;
-      --accent:#818cf8; --accent-soft:#1c2236; --accent-ink:#c7cdfb;
-      --good:#4ade80; --bad:#f87171; --warn:#fbbf24;
+      --bg:#0b0d11; --bg2:#0f1218; --panel:#14181f; --ink:#eceff5; --ink2:#c2cad8;
+      --muted:#8593ab; --line:#242a35; --line2:#1c212a;
+      --accent:#7c83f8; --accent2:#a78bfa; --accent-soft:#1a1f36; --accent-ink:#c3c8fd;
+      --good:#4ade80; --good-soft:#0e2a1c;
+      --warn:#fbbf24; --warn-soft:#2c2109;
+      --bad:#f87171; --bad-soft:#2d1416;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 28px -12px rgba(0,0,0,.6);
     }
   }
-  :root[data-theme="dark"] {
-    --bg:#0e1014; --panel:#161a20; --ink:#e7e9ee; --muted:#93a0b0;
-    --line:#262b33; --line-soft:#20242c;
-    --accent:#818cf8; --accent-soft:#1c2236; --accent-ink:#c7cdfb;
-    --good:#4ade80; --bad:#f87171; --warn:#fbbf24;
-  }
-  :root[data-theme="light"] {
-    --bg:#f5f6f8; --panel:#ffffff; --ink:#1b1e24; --muted:#6b7280;
-    --line:#e6e8ec; --line-soft:#eef0f3;
-    --accent:#4f46e5; --accent-soft:#eef2ff; --accent-ink:#3730a3;
-    --good:#15803d; --bad:#b91c1c; --warn:#b45309;
-  }
-
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font:15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  .wrap { max-width:880px; margin:0 auto; padding:1.75rem 1rem 4rem; }
+  html { -webkit-text-size-adjust:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-image: radial-gradient(1200px 500px at 50% -220px, var(--accent-soft), transparent 70%);
+    background-repeat:no-repeat;
+  }
+  .wrap { max-width:940px; margin:0 auto; padding:2.25rem 1.15rem 5rem; }
 
-  header.top { display:flex; align-items:baseline; gap:.6rem; flex-wrap:wrap; margin-bottom:1.1rem; }
-  header.top h1 { font-size:1.35rem; margin:0; letter-spacing:-.01em; }
-  .pill { display:inline-block; background:var(--accent-soft); color:var(--accent-ink);
-          border-radius:999px; padding:.12rem .6rem; font-size:.72rem; font-weight:600; }
-  .sub { color:var(--muted); font-size:.82rem; margin:.1rem 0 0; width:100%; }
+  /* ---------- header ---------- */
+  .hdr { margin-bottom:1.5rem; }
+  .eyebrow { font-size:.7rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+             color:var(--accent); margin:0 0 .35rem; }
+  h1 { font-size:clamp(1.5rem, 3.2vw, 1.95rem); margin:0; letter-spacing:-.02em; line-height:1.2; }
+  .hdr-sub { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-top:.5rem;
+             color:var(--muted); font-size:.85rem; }
+  a.link { color:var(--accent); text-decoration:none; font-weight:600; }
+  a.link:hover { text-decoration:underline; }
+  .dot { width:3px; height:3px; border-radius:50%; background:var(--muted); opacity:.6; }
 
-  .toolbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center;
-             background:var(--panel); border:1px solid var(--line); border-radius:12px;
-             padding:.7rem .8rem; margin-bottom:1.1rem; }
-  .toolbar label { font-size:.7rem; text-transform:uppercase; letter-spacing:.05em;
-                   color:var(--muted); margin-right:.35rem; }
-  select { font:inherit; color:var(--ink); background:var(--panel);
-           border:1px solid var(--line); border-radius:8px; padding:.4rem .55rem; max-width:100%; }
+  /* ---------- stat tiles ---------- */
+  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:.7rem; margin:1.25rem 0; }
+  @media (max-width:660px) { .stats { grid-template-columns:repeat(2, 1fr); } }
+  .tile { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+          padding:.85rem .95rem; box-shadow:var(--shadow); }
+  .tile .k { font-size:.68rem; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--muted); font-weight:700; }
+  .tile .v { font-size:1.6rem; font-weight:700; letter-spacing:-.02em; margin-top:.15rem;
+             font-variant-numeric:tabular-nums; }
+  .tile .v.good { color:var(--good); } .tile .v.warn { color:var(--warn); } .tile .v.bad { color:var(--bad); }
+
+  /* ---------- action bar ---------- */
+  .actionbar { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap;
+               background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+               padding:.85rem; box-shadow:var(--shadow); margin-bottom:1.15rem; }
+  select { font:inherit; color:var(--ink); background:var(--bg2); border:1px solid var(--line);
+           border-radius:9px; padding:.5rem .6rem; max-width:100%; }
   select:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  label.lbl { font-size:.66rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em;
+              color:var(--muted); display:block; margin-bottom:.25rem; }
   .grow { flex:1 1 auto; }
-  button.run { font:inherit; font-weight:600; color:#fff; background:var(--accent);
-               border:0; border-radius:8px; padding:.5rem .95rem; cursor:pointer;
-               display:inline-flex; align-items:center; gap:.45rem; }
-  button.run:disabled { opacity:.6; cursor:progress; }
-  .spin { width:14px; height:14px; border:2px solid #ffffff8c; border-top-color:#fff;
+  button.primary {
+    font:inherit; font-weight:650; color:#fff; border:0; border-radius:10px;
+    padding:.7rem 1.3rem; cursor:pointer; display:inline-flex; align-items:center; gap:.5rem;
+    background:linear-gradient(135deg, var(--accent), var(--accent2));
+    box-shadow:0 1px 2px rgba(0,0,0,.12), 0 6px 18px -8px var(--accent);
+    transition:transform .12s ease, filter .12s ease;
+  }
+  button.primary:hover:not(:disabled) { filter:brightness(1.07); transform:translateY(-1px); }
+  button.primary:disabled { opacity:.75; cursor:progress; }
+  .spin { width:14px; height:14px; border:2px solid rgba(255,255,255,.45); border-top-color:#fff;
           border-radius:50%; animation:spin .7s linear infinite; display:none; }
-  button.run.busy .spin { display:inline-block; }
+  button.primary.busy .spin { display:inline-block; }
   @keyframes spin { to { transform:rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spin { animation:none; } }
 
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
-          padding:1.15rem 1.35rem; margin-bottom:1.1rem; }
-  .card h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em;
-             color:var(--muted); margin:0 0 .7rem; }
-  h3 { font-size:.9rem; margin:.9rem 0 .3rem; display:flex; align-items:center; gap:.4rem; }
-  h3.added { color:var(--good); } h3.removed { color:var(--bad); } h3.moved { color:var(--warn); }
-  ul { margin:.2rem 0 .4rem; padding-left:1.2rem; }
-  li { margin:.12rem 0; }
-  .u { font-family:var(--mono); font-variant-numeric:tabular-nums; }
-  .muted { color:var(--muted); font-size:.84rem; }
-  .ok { color:var(--good); font-weight:600; }
+  /* ---------- cards ---------- */
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+          padding:1.15rem 1.3rem; margin-bottom:1.15rem; box-shadow:var(--shadow); }
+  .card h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.07em;
+             color:var(--muted); margin:0 0 .8rem; font-weight:700; }
+  h3 { font-size:.9rem; margin:.9rem 0 .3rem; }
+  ul { margin:.25rem 0 .5rem; padding-left:1.15rem; }
+  li { margin:.15rem 0; }
+  .muted { color:var(--muted); font-size:.85rem; }
+  .u { font-family:var(--mono); font-size:.85em; }
 
+  /* ---------- live console ---------- */
+  #consoleCard { display:none; }
+  #consoleCard.on { display:block; }
+  .console { font-family:var(--mono); font-size:.79rem; line-height:1.5;
+             background:var(--bg2); border:1px solid var(--line2); border-radius:10px;
+             padding:.7rem .8rem; max-height:290px; overflow-y:auto; }
+  .ln { display:flex; gap:.6rem; padding:.14rem 0; animation:fade .2s ease; }
+  @keyframes fade { from { opacity:0; transform:translateY(2px);} to {opacity:1; transform:none;} }
+  .ln .t { color:var(--muted); flex:0 0 4.4rem; text-align:right; font-variant-numeric:tabular-nums; }
+  .ln .m { flex:1 1 auto; color:var(--ink2); }
+  .ln.phase .m { color:var(--accent); font-weight:700; margin-top:.3rem; }
+  .ln.warn .m { color:var(--warn); }
+  .ln.good .m { color:var(--good); }
+  .ln.bad  .m { color:var(--bad); }
+
+  /* ---------- verdict banner ---------- */
+  .verdict { border-radius:10px; padding:.75rem .9rem; display:flex; gap:.6rem;
+             align-items:flex-start; font-size:.9rem; }
+  .verdict.good { background:var(--good-soft); color:var(--good); }
+  .verdict.warn { background:var(--warn-soft); color:var(--warn); }
+  .verdict.bad  { background:var(--bad-soft);  color:var(--bad); }
+  .verdict .ico { font-size:1rem; line-height:1.4; }
+  .verdict b { font-weight:700; }
+
+  /* ---------- explainer ---------- */
+  .srcs { display:grid; grid-template-columns:1fr 1fr; gap:.7rem; }
+  @media (max-width:660px) { .srcs { grid-template-columns:1fr; } }
+  .src { border:1px solid var(--line); border-radius:10px; padding:.8rem .9rem; background:var(--bg2); }
+  .src .tag { font-size:.62rem; font-weight:800; letter-spacing:.08em; text-transform:uppercase;
+              padding:.1rem .45rem; border-radius:999px; background:var(--accent-soft);
+              color:var(--accent-ink); }
+  .src h4 { margin:.45rem 0 .3rem; font-size:.92rem; }
+  .src p { margin:0; font-size:.83rem; color:var(--muted); }
+  details.how summary { cursor:pointer; font-size:.85rem; color:var(--accent); font-weight:600;
+                        list-style:none; }
+  details.how summary::-webkit-details-marker { display:none; }
+  details.how summary::before { content:"▸ "; }
+  details.how[open] summary::before { content:"▾ "; }
+  details.how p { font-size:.86rem; color:var(--ink2); }
+
+  /* ---------- table ---------- */
   table { width:100%; border-collapse:collapse; }
-  th, td { text-align:left; padding:.5rem .55rem; border-bottom:1px solid var(--line-soft); }
-  th { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
-  td.unit { font-family:var(--mono); font-variant-numeric:tabular-nums;
-            color:var(--muted); white-space:nowrap; }
-  .status { display:inline-block; font-size:.72rem; padding:.05rem .5rem; border-radius:999px;
-            background:color-mix(in srgb, var(--good) 15%, transparent); color:var(--good); }
-  .status.warn { background:color-mix(in srgb, var(--warn) 18%, transparent); color:var(--warn); }
-  .err { color:var(--bad); font-size:.85rem; }
-  .empty { text-align:center; color:var(--muted); padding:2rem 0; }
-  .filter { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line);
-            border-radius:8px; padding:.4rem .55rem; width:220px; max-width:100%; }
-
-  button.ghost { font:inherit; font-weight:600; color:var(--accent); background:transparent;
-                 border:1px solid var(--line); border-radius:8px; padding:.5rem .85rem; cursor:pointer;
-                 display:inline-flex; align-items:center; gap:.45rem; }
-  button.ghost:disabled { opacity:.5; cursor:not-allowed; }
-  button.ghost.busy .spin { display:inline-block; border-top-color:var(--accent); border-color:color-mix(in srgb, var(--accent) 35%, transparent); border-top-color:var(--accent); }
-  .recon-ok { color:var(--good); font-weight:600; }
-  .recon-bad { color:var(--warn); font-weight:600; }
-  a.siteLink { color:var(--accent); }
+  th, td { text-align:left; padding:.5rem .55rem; border-bottom:1px solid var(--line2); }
+  th { font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:700; }
+  td.unit { font-family:var(--mono); font-size:.82rem; color:var(--muted); white-space:nowrap; }
+  .pill { display:inline-block; font-size:.7rem; font-weight:600; padding:.08rem .5rem; border-radius:999px; }
+  .pill.open { background:var(--good-soft); color:var(--good); }
+  .pill.soon { background:var(--warn-soft); color:var(--warn); }
+  .pill.miss { background:var(--bad-soft); color:var(--bad); }
+  .empty { text-align:center; color:var(--muted); padding:1.8rem 0; }
+  .filter { font:inherit; color:var(--ink); background:var(--bg2); border:1px solid var(--line);
+            border-radius:9px; padding:.45rem .6rem; width:200px; max-width:100%; }
+  .thead-row { display:flex; justify-content:space-between; align-items:center; gap:.6rem;
+               flex-wrap:wrap; margin-bottom:.6rem; }
+  .err { color:var(--bad); font-size:.86rem; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header class="top">
-    <h1 id="title">Mall Directory Monitor</h1>
-    <span class="pill" id="count">—</span>
-    <p class="sub" id="meta">Pick a venue and press Run, or open a previous run.</p>
+
+  <header class="hdr">
+    <p class="eyebrow">Mall Directory Monitor</p>
+    <h1 id="mallName">Loading…</h1>
+    <div class="hdr-sub">
+      <a class="link" id="mallSite" href="#" target="_blank" rel="noopener">Official website ↗</a>
+      <span class="dot"></span>
+      <a class="link" id="mallMap" href="#" target="_blank" rel="noopener">Center map ↗</a>
+      <span class="dot"></span>
+      <span id="lastRun">No runs yet</span>
+    </div>
   </header>
 
-  <div class="toolbar">
-    <span><label>Venue</label><select id="venue"></select></span>
-    <span><label>Previous runs</label><select id="runs"><option value="">— none yet —</option></select></span>
+  <div class="stats">
+    <div class="tile"><div class="k">Stores</div><div class="v" id="sTotal">—</div></div>
+    <div class="tile"><div class="k">Open</div><div class="v good" id="sOpen">—</div></div>
+    <div class="tile"><div class="k">Coming soon</div><div class="v warn" id="sSoon">—</div></div>
+    <div class="tile"><div class="k">Missing from map</div><div class="v" id="sMiss">—</div></div>
+  </div>
+
+  <div class="actionbar">
+    <div>
+      <label class="lbl" for="venue">Mall</label>
+      <select id="venue"></select>
+    </div>
+    <div>
+      <label class="lbl" for="runs">History</label>
+      <select id="runs"><option value="">— no runs yet —</option></select>
+    </div>
     <span class="grow"></span>
-    <input class="filter" id="filter" type="search" placeholder="Filter stores…" aria-label="Filter stores">
-    <button class="ghost" id="reconcileBtn" title="Compare this snapshot against a live scrape of the mall's own site">
-      <span class="spin"></span><span>Check completeness</span>
+    <button class="primary" id="runBtn" aria-label="Run check">
+      <span class="spin" aria-hidden="true"></span><span id="runLbl">Run check</span>
     </button>
-    <button class="run" id="runBtn"><span class="spin"></span><span>Run now</span></button>
   </div>
 
-  <div class="card" id="reconcileCard" hidden>
-    <h2>Data completeness (vs official site)</h2>
-    <div id="reconcileResult"></div>
+  <div class="card" id="consoleCard">
+    <h2>Live activity</h2>
+    <div class="console" id="console"></div>
+  </div>
+
+  <div class="card" id="verdictCard" style="display:none">
+    <h2>Result</h2>
+    <div id="verdict"></div>
   </div>
 
   <div class="card">
+    <h2>Where this data comes from</h2>
+    <div class="srcs">
+      <div class="src">
+        <span class="tag">Source A</span>
+        <h4>The mall's map</h4>
+        <p>The data behind the mall's interactive floor plan. It's fast and it's the only
+           place that knows each store's <b>unit number</b> (like A010). This is our main source.</p>
+      </div>
+      <div class="src">
+        <span class="tag">Source B</span>
+        <h4>The mall's website</h4>
+        <p>The public store list shoppers see. It's the official roster, but it doesn't
+           publish unit numbers. We use it purely to check Source A isn't missing anyone.</p>
+      </div>
+    </div>
+    <details class="how" style="margin-top:.9rem">
+      <summary>What "cross-check" means, and what it can't promise</summary>
+      <p><b>The check:</b> we pull both lists and compare the store names. If the website
+         lists a store the map doesn't have, we flag it — that's a real gap we've caught
+         before (a store can be leased and listed before it's drawn onto the map).</p>
+      <p><b>The honest limit:</b> this only compares <i>names</i>. A clean result does
+         <b>not</b> verify that unit numbers are correct. It also only proves the mall's two
+         systems agree with each other — not that either matches the physical mall today.
+         The mall's site also blocks bots, so the cross-check sometimes can't run; when that
+         happens we say so rather than quietly claiming success.</p>
+    </details>
+  </div>
+
+  <div class="card" id="changesCard">
     <h2>Changes since previous run</h2>
-    <div id="changes"><p class="muted">No run loaded yet.</p></div>
+    <div id="changes"><p class="muted">Run a check to see what changed.</p></div>
   </div>
 
   <div class="card">
-    <h2>Current directory</h2>
-    <div id="tableWrap"><p class="empty">No data loaded.</p></div>
+    <div class="thead-row">
+      <h2 style="margin:0">Store directory</h2>
+      <input class="filter" id="filter" type="search" placeholder="Filter stores…" aria-label="Filter stores">
+    </div>
+    <div id="tableWrap"><p class="empty">No data yet — press <b>Run check</b>.</p></div>
   </div>
+
 </div>
 
 <script>
@@ -140,166 +249,218 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const unitOf = s => s.location_in_outlet || s.floor || "—";
 
-let current = null;   // currently displayed run doc
+let current = null, venues = [], running = false;
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || (r.status + " " + r.statusText));
+async function api(p, o) {
+  const r = await fetch(p, o);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || `${r.status} ${r.statusText}`);
   return r.json();
 }
 
+/* ---------- console ---------- */
+function clearConsole() { $("#console").innerHTML = ""; $("#consoleCard").classList.add("on"); }
+function logLine(ms, msg, kind) {
+  const el = document.createElement("div");
+  el.className = "ln" + (kind ? " " + kind : "");
+  const t = ms == null ? "" : (ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`);
+  el.innerHTML = `<span class="t">${esc(t)}</span><span class="m">${esc(msg)}</span>`;
+  const c = $("#console"); c.appendChild(el); c.scrollTop = c.scrollHeight;
+}
+
+/* ---------- venue ---------- */
 async function loadVenues() {
-  const venues = await api("/api/venues");
-  $("#venue").innerHTML = venues.map(v => `<option>${esc(v)}</option>`).join("");
+  venues = await api("/api/venues");
+  $("#venue").innerHTML = venues.map(v => `<option value="${esc(v.slug)}">${esc(v.name)}</option>`).join("");
+  paintVenue();
+}
+function venueInfo() { return venues.find(v => v.slug === $("#venue").value) || {}; }
+function paintVenue() {
+  const v = venueInfo();
+  $("#mallName").textContent = v.name || "Mall Directory";
+  $("#mallSite").href = v.site || "#";
+  $("#mallMap").href = v.map_url || "#";
 }
 
-async function loadRuns(selectId) {
-  const venue = $("#venue").value;
-  const runs = await api("/api/runs?venue=" + encodeURIComponent(venue));
-  const opts = runs.map(r => {
-    const d = (r.added + r.removed + r.moved) > 0
-      ? ` — +${r.added}/-${r.removed}/↔${r.moved}` : " — no change";
-    return `<option value="${esc(r.id)}">${esc(r.generated)} (${r.count})${d}</option>`;
-  });
-  $("#runs").innerHTML = opts.length ? opts.join("")
-    : `<option value="">— none yet —</option>`;
-  if (runs.length) {
-    $("#runs").value = selectId && runs.some(r=>r.id===selectId) ? selectId : runs[0].id;
-    await showRun($("#runs").value);
-  } else {
-    current = null;
-    $("#changes").innerHTML = `<p class="muted">No runs recorded for this venue yet. Press <b>Run now</b>.</p>`;
-    $("#tableWrap").innerHTML = `<p class="empty">No data — run the scraper to create the first snapshot.</p>`;
-    $("#count").textContent = "—";
-    $("#meta").textContent = "No runs yet.";
+/* ---------- history ---------- */
+// selectId: which run to select. alreadyRendered: we already have that doc in
+// hand (straight off the SSE 'done' event), so just sync the dropdown.
+async function loadRuns(selectId, alreadyRendered = false) {
+  const runs = await api("/api/runs?venue=" + encodeURIComponent($("#venue").value));
+  if (!runs.length) {
+    $("#runs").innerHTML = `<option value="">— no runs yet —</option>`;
+    $("#lastRun").textContent = "No runs yet";
+    return;
   }
+  $("#runs").innerHTML = runs.map(r => {
+    const bits = [];
+    if (r.added || r.removed || r.moved) bits.push(`+${r.added}/-${r.removed}/↔${r.moved}`);
+    if (r.missing) bits.push(`${r.missing} missing`);
+    return `<option value="${esc(r.id)}">${esc(r.generated)} · ${r.count} stores${bits.length ? " · " + bits.join(" · ") : ""}</option>`;
+  }).join("");
+  $("#runs").value = (selectId && runs.some(r=>r.id===selectId)) ? selectId : runs[0].id;
+  if (!alreadyRendered) await showRun($("#runs").value);
 }
-
 async function showRun(id) {
   if (!id) return;
   current = await api("/api/run/" + encodeURIComponent(id));
   render(current);
 }
 
+/* ---------- render ---------- */
 function render(doc) {
-  $("#title").textContent = doc.venue || "Mall Directory";
-  $("#count").textContent = (doc.stores?.length ?? 0) + " stores";
-  $("#meta").textContent = `Snapshot ${doc.generated}  ·  source: ${doc.method || "—"}`;
+  const stores = doc.stores || [];
+  const open = stores.filter(s => s.status === "Open").length;
+  const soon = stores.length - open;
+  const rec  = doc.reconciliation || null;
+  const miss = (rec && rec.missing_from_mappedin) ? rec.missing_from_mappedin.length : null;
+
+  $("#sTotal").textContent = stores.length;
+  $("#sOpen").textContent  = open;
+  $("#sSoon").textContent  = soon;
+  const mEl = $("#sMiss");
+  mEl.textContent = (rec && rec.blocked) ? "?" : (miss == null ? "—" : miss);
+  mEl.className = "v " + (miss ? "bad" : (miss === 0 ? "good" : ""));
+  $("#lastRun").textContent = "Last checked " + (doc.generated || "—");
+
+  renderVerdict(doc, rec, miss);
   renderChanges(doc.changes);
-  renderTable(doc.stores || []);
+  renderTable(stores, rec);
+}
+
+function renderVerdict(doc, rec, miss) {
+  const card = $("#verdictCard"); card.style.display = "block";
+  const el = $("#verdict");
+  if (!rec) {
+    el.innerHTML = `<div class="verdict warn"><span class="ico">•</span><div>
+      Snapshot saved, but <b>no cross-check ran</b>, so we can't confirm the map data is complete.</div></div>`;
+    return;
+  }
+  if (rec.blocked) {
+    el.innerHTML = `<div class="verdict warn"><span class="ico">⚠</span><div>
+      <b>Cross-check couldn't run</b> — the mall's website blocked our request with its bot check.
+      The ${doc.stores.length} stores below are still accurate as of this run; we just couldn't
+      independently confirm nothing is missing. Try again in a bit.</div></div>`;
+    return;
+  }
+  if (rec.error) {
+    el.innerHTML = `<div class="verdict bad"><span class="ico">✕</span><div>
+      <b>Cross-check failed:</b> ${esc(rec.error)}</div></div>`;
+    return;
+  }
+  if (miss === 0) {
+    el.innerHTML = `<div class="verdict good"><span class="ico">✓</span><div>
+      <b>Both sources agree.</b> All ${rec.simon_count} stores on the mall's website are present
+      in the map data. (This confirms the store <i>list</i> is complete — it doesn't verify unit numbers.)</div></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="verdict warn"><span class="ico">⚠</span><div>
+    <b>${miss} store(s) missing from the map data.</b>
+    The mall's website lists <b>${rec.simon_count}</b> stores but the map only has <b>${rec.mappedin_count}</b>.
+    These are usually stores that are leased and announced but not yet drawn onto the floor plan —
+    so they have no unit number yet:
+    <ul>${rec.missing_from_mappedin.map(n=>`<li>${esc(n)}</li>`).join("")}</ul></div></div>`;
 }
 
 function renderChanges(ch) {
   const el = $("#changes");
-  if (!ch) { el.innerHTML = `<p class="muted">First recorded run for this venue — nothing to compare against yet.</p>`; return; }
-  const total = ch.added.length + ch.removed.length + ch.moved.length;
-  if (total === 0) { el.innerHTML = `<p class="ok">✓ No changes since the previous run.</p>`; return; }
+  if (!ch) { el.innerHTML = `<p class="muted">First run for this mall — nothing to compare against yet.</p>`; return; }
+  const n = ch.added.length + ch.removed.length + ch.moved.length;
+  if (!n) { el.innerHTML = `<p class="muted">No changes since the previous run.</p>`; return; }
   let h = "";
-  if (ch.added.length) h += `<h3 class="added">➕ New (${ch.added.length})</h3><ul>` +
-    ch.added.map(s => `<li>${esc(s.name)} <span class="u">${esc(unitOf(s))}</span></li>`).join("") + "</ul>";
-  if (ch.removed.length) h += `<h3 class="removed">➖ Gone (${ch.removed.length})</h3><ul>` +
-    ch.removed.map(s => `<li>${esc(s.name)} <span class="u">${esc(unitOf(s))}</span></li>`).join("") + "</ul>";
-  if (ch.moved.length) h += `<h3 class="moved">↔ Relocated (${ch.moved.length})</h3><ul>` +
-    ch.moved.map(m => `<li>${esc(m.name)}: <span class="u">${esc(m.from||"—")}</span> → <span class="u">${esc(m.to||"—")}</span></li>`).join("") + "</ul>";
+  if (ch.added.length) h += `<h3 style="color:var(--good)">New (${ch.added.length})</h3><ul>` +
+    ch.added.map(s=>`<li>${esc(s.name)} <span class="u">${esc(unitOf(s))}</span></li>`).join("") + `</ul>`;
+  if (ch.removed.length) h += `<h3 style="color:var(--bad)">Gone (${ch.removed.length})</h3><ul>` +
+    ch.removed.map(s=>`<li>${esc(s.name)} <span class="u">${esc(unitOf(s))}</span></li>`).join("") + `</ul>`;
+  if (ch.moved.length) h += `<h3 style="color:var(--warn)">Moved (${ch.moved.length})</h3><ul>` +
+    ch.moved.map(m=>`<li>${esc(m.name)}: <span class="u">${esc(m.from||"—")}</span> → <span class="u">${esc(m.to||"—")}</span></li>`).join("") + `</ul>`;
   el.innerHTML = h;
 }
 
-function renderTable(stores) {
+function renderTable(stores, rec) {
   const q = $("#filter").value.trim().toLowerCase();
-  const rows = stores
-    .filter(s => !q || (s.name||"").toLowerCase().includes(q) || String(unitOf(s)).toLowerCase().includes(q))
-    .sort((a,b) => (a.name||"").localeCompare(b.name||""))
-    .map(s => {
-      const cls = (s.status && s.status !== "Open") ? "status warn" : "status";
-      return `<tr><td>${esc(s.name)}</td><td class="unit">${esc(unitOf(s))}</td>` +
-             `<td><span class="${cls}">${esc(s.status||"—")}</span></td></tr>`;
+  // Show website-only stores inline too, so the table matches the mall's real roster.
+  const missing = (rec && rec.missing_from_mappedin) ? rec.missing_from_mappedin : [];
+  const rows = [
+    ...stores.map(s => ({ name:s.name, unit:unitOf(s), status:s.status || "Open", missing:false })),
+    ...missing.map(n => ({ name:n, unit:"—", status:"Not on map", missing:true })),
+  ]
+    .filter(r => !q || r.name.toLowerCase().includes(q) || String(r.unit).toLowerCase().includes(q))
+    .sort((a,b) => a.name.localeCompare(b.name))
+    .map(r => {
+      const cls = r.missing ? "pill miss" : (r.status === "Open" ? "pill open" : "pill soon");
+      return `<tr><td>${esc(r.name)}</td><td class="unit">${esc(r.unit)}</td>` +
+             `<td><span class="${cls}">${esc(r.status)}</span></td></tr>`;
     }).join("");
   $("#tableWrap").innerHTML = rows
     ? `<table><thead><tr><th>Store</th><th>Unit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p class="empty">No stores match “${esc(q)}”.</p>`;
 }
 
-async function checkCapabilities() {
-  try {
-    const cap = await api("/api/capabilities");
-    const btn = $("#reconcileBtn");
-    if (!cap.reconciliation) {
-      btn.disabled = true;
-      btn.title = "Not configured on this deployment (needs HYPERBROWSER_API_KEY).";
-    }
-  } catch { /* capabilities check is best-effort; leave the button as-is */ }
-}
-
-async function runReconcile() {
-  const btn = $("#reconcileBtn");
-  const card = $("#reconcileCard");
-  const out = $("#reconcileResult");
-  btn.disabled = true; btn.classList.add("busy");
-  btn.querySelector("span:last-child").textContent = "Checking…";
-  card.hidden = false;
-  out.innerHTML = `<p class="muted">Fetching a fresh Mappedin snapshot and a live scrape of the mall's own site — this can take up to a minute…</p>`;
-  try {
-    const r = await api("/api/reconcile", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ venue: $("#venue").value }),
-    });
-    renderReconcile(r);
-  } catch (e) {
-    out.innerHTML = `<p class="err">${esc(e.message)}</p>`;
-  } finally {
-    btn.disabled = false; btn.classList.remove("busy");
-    btn.querySelector("span:last-child").textContent = "Check completeness";
-  }
-}
-
-function renderReconcile(r) {
-  const out = $("#reconcileResult");
-  const link = `<a class="siteLink" href="${esc(r.simon_url)}" target="_blank" rel="noopener">official site ↗</a>`;
-  let h = `<p class="muted">Checked ${esc(r.checked_at)} · Mappedin: <b>${r.mappedin_count}</b> stores` +
-          ` · ${link}: <b>${r.simon_count}</b> stores</p>`;
-  if (r.in_sync) {
-    h += `<p class="recon-ok">✓ In sync — every store on the official site is present in the map data.</p>`;
-  } else {
-    h += `<p class="recon-bad">⚠ Mismatch found — the map data may be incomplete.</p>`;
-    if (r.missing_from_mappedin.length) {
-      h += `<h3>On the official site but missing from Mappedin (${r.missing_from_mappedin.length})</h3><ul>` +
-        r.missing_from_mappedin.map(n => `<li>${esc(n)}</li>`).join("") + "</ul>";
-    }
-    if (r.extra_in_mappedin.length) {
-      h += `<h3>In Mappedin but not seen on the official site (${r.extra_in_mappedin.length})</h3><ul>` +
-        r.extra_in_mappedin.map(n => `<li>${esc(n)}</li>`).join("") + "</ul>";
-    }
-  }
-  out.innerHTML = h;
-}
-
-async function runNow() {
+/* ---------- the one button ---------- */
+function runCheck() {
+  if (running) return;
+  running = true;
   const btn = $("#runBtn");
-  btn.disabled = true; btn.classList.add("busy");
-  btn.querySelector("span:last-child").textContent = "Running…";
-  try {
-    const doc = await api("/api/run", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ venue: $("#venue").value }),
-    });
-    await loadRuns(doc.id);
-  } catch (e) {
-    $("#changes").innerHTML = `<p class="err">Run failed: ${esc(e.message)}</p>`;
-  } finally {
-    btn.disabled = false; btn.classList.remove("busy");
-    btn.querySelector("span:last-child").textContent = "Run now";
-  }
+  btn.disabled = true; btn.classList.add("busy"); $("#runLbl").textContent = "Running…";
+  clearConsole();
+
+  const es = new EventSource("/api/run-stream?venue=" + encodeURIComponent($("#venue").value));
+  let done = false;   // distinguishes "stream ended because we finished" from a real drop
+
+  const finish = () => {
+    es.close(); running = false;
+    btn.disabled = false; btn.classList.remove("busy"); $("#runLbl").textContent = "Run check";
+  };
+
+  es.onmessage = async (e) => {
+    const d = JSON.parse(e.data);
+    if (d.event === "start")       logLine(d.ms, `Starting check for ${d.info.name}`, "phase");
+    else if (d.event === "phase")  logLine(d.ms, d.title, "phase");
+    else if (d.event === "step")   logLine(d.ms, d.msg, d.level);
+    else if (d.event === "phase_done") { /* already covered by the step lines */ }
+    else if (d.event === "done") {
+      done = true;
+      // Close first: when the server's generator ends, EventSource would
+      // otherwise auto-reconnect and kick off the whole pipeline again.
+      es.close();
+      logLine(d.ms, "Done — snapshot saved.", "good");
+
+      // The done event already carries the full snapshot, so paint straight
+      // from it — no refetch. (Re-fetching here also stalled badly: the SSE
+      // connection kept the HTTP socket busy and the follow-up GET queued for
+      // ~20s behind it.)
+      current = d.doc;
+      render(d.doc);
+      finish();
+
+      // History dropdown is the only thing that needs the server; refresh it
+      // in the background so a slow/failed list never blocks the results.
+      loadRuns(d.doc.id, true).catch(err =>
+        logLine(null, "Results shown, but the history list didn't refresh: " + err.message, "warn"));
+    } else if (d.event === "error") {
+      done = true;
+      logLine(d.ms, "Failed: " + d.msg, "bad");
+      finish();
+    }
+  };
+  es.onerror = () => {
+    if (done) return;   // normal end-of-stream, not a failure
+    logLine(null, "Lost connection to the server.", "bad");
+    finish();
+  };
 }
 
-$("#runBtn").addEventListener("click", runNow);
-$("#reconcileBtn").addEventListener("click", runReconcile);
+/* ---------- wire up ---------- */
+$("#runBtn").addEventListener("click", runCheck);
 $("#runs").addEventListener("change", e => showRun(e.target.value));
-$("#venue").addEventListener("change", () => { $("#reconcileCard").hidden = true; loadRuns(); });
-$("#filter").addEventListener("input", () => { if (current) renderTable(current.stores || []); });
+$("#venue").addEventListener("change", async () => { paintVenue(); await loadRuns(); });
+$("#filter").addEventListener("input", () => {
+  if (current) renderTable(current.stores || [], current.reconciliation);
+});
 
 (async () => {
-  try { await loadVenues(); await loadRuns(); await checkCapabilities(); }
-  catch (e) { $("#changes").innerHTML = `<p class="err">Could not reach the server: ${esc(e.message)}</p>`; }
+  try { await loadVenues(); await loadRuns(); }
+  catch (e) { $("#changes").innerHTML = `<p class="err">Couldn't reach the server: ${esc(e.message)}</p>`; }
 })();
 </script>
 </body>

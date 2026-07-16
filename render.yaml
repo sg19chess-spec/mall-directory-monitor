@@ -1,0 +1,27 @@
+# Render Blueprint — auto-deploys on every push to the connected GitHub branch.
+# In Render: New + -> Blueprint -> pick this repo -> it creates the web service.
+#
+# History is stored in SUPABASE (Postgres). Set DATABASE_URL in the Render
+# dashboard to your Supabase *Transaction pooler* connection string:
+#   Supabase -> Project -> Connect -> ORMs/URI -> "Transaction pooler"
+#   postgresql://postgres.<ref>:<PASSWORD>@aws-0-<region>.pooler.supabase.com:6543/postgres
+# Then paste it as the DATABASE_URL secret below (Render marks sync:false vars
+# as secrets you fill in the dashboard). The filesystem on Render is ephemeral,
+# so this external DB is what keeps run history across deploys.
+
+services:
+  - type: web
+    name: mall-dashboard
+    runtime: python
+    plan: free
+    rootDir: webapp
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false        # paste your Supabase transaction-pooler URI here
+      - key: MAPPEDIN_KEY
+        sync: false        # optional — defaults are built in
+      - key: MAPPEDIN_SECRET
+        sync: false

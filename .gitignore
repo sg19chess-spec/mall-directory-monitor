@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local run history (durable history lives in Postgres on Render).
+# Delete these two lines if you deliberately want to commit demo snapshots.
+webapp/runs/
+
+# CLI scraper local outputs
+*.stores.json
+*.stores.html
+*.partial.json
+debug_*.md
+feed_candidates.json
+run.log

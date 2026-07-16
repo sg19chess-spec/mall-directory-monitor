@@ -41,17 +41,32 @@ def mappedin_venue_from_url(url: str) -> str | None:
     return f"simon-{m.group(1).lower()}" if m else None
 
 
+def _status_from_states(states: list[dict] | None) -> str:
+    """Mappedin's location.states carries e.g. [{"type": "coming-soon", ...}]
+    when a store isn't open yet. Empty/absent -> a normal open store. Maps
+    known types to the label the old Simon-page scraper used ("Coming Soon"
+    / "Open") and falls back to a readable label for any type we haven't
+    seen yet, so a new status type shows up as data instead of silently
+    being dropped to "Open"."""
+    if not states:
+        return "Open"
+    t = (states[0].get("type") or "").strip()
+    return {"coming-soon": "Coming Soon"}.get(t) or (t.replace("-", " ").title() or "Open")
+
+
 def parse_mappedin_venue(venue: str) -> list[dict]:
     """Full store directory + unit codes for a Mappedin venue. See the CLI
     script for the annotated version; this is the same 2-call logic."""
     headers = _mi_headers()
 
-    loc_url = f"{MAPPEDIN_API}/public/1/location/{venue}?fields=id,externalId,name,type"
+    loc_url = f"{MAPPEDIN_API}/public/1/location/{venue}?fields=id,externalId,name,type,states"
     locations = json.loads(_http_get(loc_url, headers).decode("utf-8"))
-    store_names = {
-        loc.get("name") for loc in locations
+    status_by_name: dict[str, str] = {
+        loc.get("name"): _status_from_states(loc.get("states"))
+        for loc in locations
         if loc.get("type") == "store" and loc.get("name")
     }
+    store_names = set(status_by_name)
     if not store_names:
         raise RuntimeError(f"Mappedin returned no stores for venue '{venue}'")
 
@@ -86,7 +101,8 @@ def parse_mappedin_venue(venue: str) -> list[dict]:
         unit = unit_by_name.get(name)
         stores.append({
             "name": name, "slug": None, "floor": unit,
-            "location_in_outlet": unit, "category": None, "status": "Open",
+            "location_in_outlet": unit, "category": None,
+            "status": status_by_name.get(name, "Open"),
         })
     return stores
 

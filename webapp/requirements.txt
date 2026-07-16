@@ -1,3 +1,4 @@
 flask>=3.0
 gunicorn>=21.0
 psycopg[binary]>=3.1
+hyperbrowser>=0.1   # optional: only used if HYPERBROWSER_API_KEY is set (see reconcile.py)

@@ -22,6 +22,7 @@ Malls list their stores online, but the public directory page usually **omits un
 └── webapp/                       # hostable dashboard
     ├── server.py                 # Flask API + serves the page
     ├── mallcore.py               # stdlib-only Mappedin fetch + diff
+    ├── reconcile.py               # optional: cross-check Mappedin vs Simon's own site
     ├── storage.py                # run history: Postgres (prod) or JSON files (dev)
     ├── static/index.html         # the dashboard UI
     ├── venues.json               # which venues to track
@@ -56,6 +57,33 @@ It writes a `.stores.json` + a self-contained `.stores.html` report, and **diffs
 ### The dashboard
 
 `webapp/` is a Flask app: a **Run now** button (live scrape), a **Previous runs** browser, per-run **change detection**, a searchable table, and light/dark themes.
+
+### Data completeness reconciliation
+
+Mappedin's venue map can **lag Simon's own site** for newly added tenants. Confirmed
+case on `simon-albertville`: *Ann Taylor Factory Store* was listed (Coming Soon) on
+`premiumoutlets.com` but was **completely absent** from the Mappedin API — not a bug
+in our parsing, a genuine gap between the two upstream systems.
+
+To catch this automatically, the dashboard has an optional **Check completeness**
+button (`webapp/reconcile.py`) that:
+
+1. Pulls a **fresh** Mappedin snapshot (not the last saved run).
+2. Does a **single** live scrape of the mall's own `/stores` page via Hyperbrowser
+   stealth — name + status only, never per-store detail pages, so it stays fast and
+   doesn't trigger the bot wall the old bulk per-store approach hit.
+3. Diffs the two by name and reports any store present on the official site but
+   missing from Mappedin's map data (or vice versa).
+
+This needs `HYPERBROWSER_API_KEY`. Without it, `GET /api/capabilities` reports
+`reconciliation: false`, the button is disabled with an explanatory tooltip, and the
+primary Mappedin path is completely unaffected — this is an optional trust layer on
+top of the fast path, not a dependency of it.
+
+**Also fixed as part of this**: the Mappedin path originally hardcoded every store's
+`status` to `"Open"`, even though Mappedin's `location.states` field already carries
+a `coming-soon` flag we just weren't requesting. Both `mallcore.py` and
+`get_store_list_unified.py` now read it and surface the real status.
 
 ---
 
@@ -119,6 +147,7 @@ set → Postgres, unset → local files.
    |---|---|
    | `DATABASE_URL` | the Supabase pooler URI above |
    | `MAPPEDIN_KEY` / `MAPPEDIN_SECRET` | *(optional — defaults are built in)* |
+   | `HYPERBROWSER_API_KEY` | *(optional — enables the "Check completeness" reconciliation feature)* |
 
 On first boot the `runs` table (with a `jsonb` snapshot column) is created automatically.
 The DB starts empty — press **Run now**, or hit `POST /api/run` on a schedule to populate it.
@@ -148,6 +177,8 @@ so "Previous runs" can walk the whole timeline.
 | `GET` | `/api/run/<id>` | one full snapshot |
 | `POST` | `/api/run` `{venue}` | scrape now, diff, save, return |
 | `GET` | `/api/health` | `{ ok, storage }` |
+| `GET` | `/api/capabilities` | `{ reconciliation }` — whether `HYPERBROWSER_API_KEY` is configured |
+| `POST` | `/api/reconcile` `{venue}` | fresh Mappedin pull vs. a live Simon-site scrape; 501 if not configured |
 
 ---
 
@@ -176,3 +207,6 @@ For the dashboard, add venue slugs to `webapp/venues.json`.
   (cache, pace requests, refresh monthly rather than constantly).
 - **This is not a security bypass** — no challenge is defeated; it reads a public data feed
   the mall's own map already uses.
+- **Mappedin can lag the official site.** Proven, not hypothetical — see "Data completeness
+  reconciliation" above. Don't treat a Mappedin-only count as a guaranteed match for the
+  mall's own published tenant list; use **Check completeness** to verify when it matters.

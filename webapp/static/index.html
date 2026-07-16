@@ -83,10 +83,20 @@
             color:var(--muted); white-space:nowrap; }
   .status { display:inline-block; font-size:.72rem; padding:.05rem .5rem; border-radius:999px;
             background:color-mix(in srgb, var(--good) 15%, transparent); color:var(--good); }
+  .status.warn { background:color-mix(in srgb, var(--warn) 18%, transparent); color:var(--warn); }
   .err { color:var(--bad); font-size:.85rem; }
   .empty { text-align:center; color:var(--muted); padding:2rem 0; }
   .filter { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line);
             border-radius:8px; padding:.4rem .55rem; width:220px; max-width:100%; }
+
+  button.ghost { font:inherit; font-weight:600; color:var(--accent); background:transparent;
+                 border:1px solid var(--line); border-radius:8px; padding:.5rem .85rem; cursor:pointer;
+                 display:inline-flex; align-items:center; gap:.45rem; }
+  button.ghost:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost.busy .spin { display:inline-block; border-top-color:var(--accent); border-color:color-mix(in srgb, var(--accent) 35%, transparent); border-top-color:var(--accent); }
+  .recon-ok { color:var(--good); font-weight:600; }
+  .recon-bad { color:var(--warn); font-weight:600; }
+  a.siteLink { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -102,7 +112,15 @@
     <span><label>Previous runs</label><select id="runs"><option value="">— none yet —</option></select></span>
     <span class="grow"></span>
     <input class="filter" id="filter" type="search" placeholder="Filter stores…" aria-label="Filter stores">
+    <button class="ghost" id="reconcileBtn" title="Compare this snapshot against a live scrape of the mall's own site">
+      <span class="spin"></span><span>Check completeness</span>
+    </button>
     <button class="run" id="runBtn"><span class="spin"></span><span>Run now</span></button>
+  </div>
+
+  <div class="card" id="reconcileCard" hidden>
+    <h2>Data completeness (vs official site)</h2>
+    <div id="reconcileResult"></div>
   </div>
 
   <div class="card">
@@ -191,11 +209,68 @@ function renderTable(stores) {
   const rows = stores
     .filter(s => !q || (s.name||"").toLowerCase().includes(q) || String(unitOf(s)).toLowerCase().includes(q))
     .sort((a,b) => (a.name||"").localeCompare(b.name||""))
-    .map(s => `<tr><td>${esc(s.name)}</td><td class="unit">${esc(unitOf(s))}</td>` +
-              `<td><span class="status">${esc(s.status||"—")}</span></td></tr>`).join("");
+    .map(s => {
+      const cls = (s.status && s.status !== "Open") ? "status warn" : "status";
+      return `<tr><td>${esc(s.name)}</td><td class="unit">${esc(unitOf(s))}</td>` +
+             `<td><span class="${cls}">${esc(s.status||"—")}</span></td></tr>`;
+    }).join("");
   $("#tableWrap").innerHTML = rows
     ? `<table><thead><tr><th>Store</th><th>Unit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p class="empty">No stores match “${esc(q)}”.</p>`;
+}
+
+async function checkCapabilities() {
+  try {
+    const cap = await api("/api/capabilities");
+    const btn = $("#reconcileBtn");
+    if (!cap.reconciliation) {
+      btn.disabled = true;
+      btn.title = "Not configured on this deployment (needs HYPERBROWSER_API_KEY).";
+    }
+  } catch { /* capabilities check is best-effort; leave the button as-is */ }
+}
+
+async function runReconcile() {
+  const btn = $("#reconcileBtn");
+  const card = $("#reconcileCard");
+  const out = $("#reconcileResult");
+  btn.disabled = true; btn.classList.add("busy");
+  btn.querySelector("span:last-child").textContent = "Checking…";
+  card.hidden = false;
+  out.innerHTML = `<p class="muted">Fetching a fresh Mappedin snapshot and a live scrape of the mall's own site — this can take up to a minute…</p>`;
+  try {
+    const r = await api("/api/reconcile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ venue: $("#venue").value }),
+    });
+    renderReconcile(r);
+  } catch (e) {
+    out.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+  } finally {
+    btn.disabled = false; btn.classList.remove("busy");
+    btn.querySelector("span:last-child").textContent = "Check completeness";
+  }
+}
+
+function renderReconcile(r) {
+  const out = $("#reconcileResult");
+  const link = `<a class="siteLink" href="${esc(r.simon_url)}" target="_blank" rel="noopener">official site ↗</a>`;
+  let h = `<p class="muted">Checked ${esc(r.checked_at)} · Mappedin: <b>${r.mappedin_count}</b> stores` +
+          ` · ${link}: <b>${r.simon_count}</b> stores</p>`;
+  if (r.in_sync) {
+    h += `<p class="recon-ok">✓ In sync — every store on the official site is present in the map data.</p>`;
+  } else {
+    h += `<p class="recon-bad">⚠ Mismatch found — the map data may be incomplete.</p>`;
+    if (r.missing_from_mappedin.length) {
+      h += `<h3>On the official site but missing from Mappedin (${r.missing_from_mappedin.length})</h3><ul>` +
+        r.missing_from_mappedin.map(n => `<li>${esc(n)}</li>`).join("") + "</ul>";
+    }
+    if (r.extra_in_mappedin.length) {
+      h += `<h3>In Mappedin but not seen on the official site (${r.extra_in_mappedin.length})</h3><ul>` +
+        r.extra_in_mappedin.map(n => `<li>${esc(n)}</li>`).join("") + "</ul>";
+    }
+  }
+  out.innerHTML = h;
 }
 
 async function runNow() {
@@ -217,12 +292,13 @@ async function runNow() {
 }
 
 $("#runBtn").addEventListener("click", runNow);
+$("#reconcileBtn").addEventListener("click", runReconcile);
 $("#runs").addEventListener("change", e => showRun(e.target.value));
-$("#venue").addEventListener("change", () => loadRuns());
+$("#venue").addEventListener("change", () => { $("#reconcileCard").hidden = true; loadRuns(); });
 $("#filter").addEventListener("input", () => { if (current) renderTable(current.stores || []); });
 
 (async () => {
-  try { await loadVenues(); await loadRuns(); }
+  try { await loadVenues(); await loadRuns(); await checkCapabilities(); }
   catch (e) { $("#changes").innerHTML = `<p class="err">Could not reach the server: ${esc(e.message)}</p>`; }
 })();
 </script>

@@ -25,3 +25,8 @@ services:
         sync: false        # optional — defaults are built in
       - key: MAPPEDIN_SECRET
         sync: false
+      - key: HYPERBROWSER_API_KEY
+        sync: false        # optional — enables the "Check completeness" reconciliation
+                            # feature (compares the Mappedin snapshot against a live
+                            # scrape of Simon's own /stores page). Unset = feature hidden,
+                            # primary Mappedin path is unaffected either way.

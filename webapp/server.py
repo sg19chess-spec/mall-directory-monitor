@@ -105,9 +105,15 @@ def api_run(rid):
 def api_do_run():
     body = request.get_json(silent=True) or {}
     venue = body.get("venue") or load_venues()[0]
+    is_moa = mallcore.is_moa_venue(venue)
     is_mapplic = mallcore.is_mapplic_venue(venue)
     try:
-        stores = mallcore.parse_mapplic_venue(venue) if is_mapplic else mallcore.parse_mappedin_venue(venue)
+        if is_moa:
+            stores = mallcore.parse_moa_venue(venue)
+        elif is_mapplic:
+            stores = mallcore.parse_mapplic_venue(venue)
+        else:
+            stores = mallcore.parse_mappedin_venue(venue)
     except Exception as e:
         return jsonify({"error": f"Scrape failed for '{venue}': {e}"}), 502
 
@@ -116,11 +122,12 @@ def api_do_run():
 
     now = datetime.datetime.now()
     rid = f"{mallcore.venue_id_component(venue)}__{now.strftime('%Y%m%d-%H%M%S')}"
+    method_prefix = "moa_api" if is_moa else ("mapplic_csv" if is_mapplic else "mappedin_api")
     doc = {
         "id": rid,
         "venue": venue,
         "generated": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "method": f"{'mapplic_csv' if is_mapplic else 'mappedin_api'}:{venue}",
+        "method": f"{method_prefix}:{venue}",
         "stores": stores,
         "changes": changes,
     }
@@ -166,12 +173,15 @@ def api_run_stream():
             try:
                 emit("start", venue=venue, info=mallcore.venue_info(venue), ms=ms())
 
+                is_moa = mallcore.is_moa_venue(venue)
                 is_mapplic = mallcore.is_mapplic_venue(venue)
-                phase = "mapplic" if is_mapplic else "mappedin"
+                phase = "moa" if is_moa else ("mapplic" if is_mapplic else "mappedin")
 
                 # --- Source A: the mall's map data (fast, primary) -------
                 emit("phase", phase=phase, title="Reading the mall's map data", ms=ms())
-                if is_mapplic:
+                if is_moa:
+                    stores = mallcore.parse_moa_venue(venue, on_progress=progress)
+                elif is_mapplic:
                     stores = mallcore.parse_mapplic_venue(venue, on_progress=progress)
                 else:
                     stores = mallcore.parse_mappedin_venue(venue, on_progress=progress)
@@ -184,11 +194,12 @@ def api_run_stream():
 
                 utc = mallcore.now_utc_iso()
                 rid = f"{mallcore.venue_id_component(venue)}__{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                method_prefix = "moa_api" if is_moa else ("mapplic_csv" if is_mapplic else "mappedin_api")
                 doc = {
                     "id": rid, "venue": venue,
                     "generated_utc": utc,
                     "generated": mallcore.to_ist_display(utc),
-                    "method": f"{'mapplic_csv' if is_mapplic else 'mappedin_api'}:{venue}",
+                    "method": f"{method_prefix}:{venue}",
                     "stores": stores, "changes": changes,
                 }
                 if changes is None:
@@ -200,11 +211,11 @@ def api_run_stream():
 
                 # --- Source B: the mall's own website (trust layer) ------
                 # Simon-specific (compares against Mappedin) — not applicable
-                # to Mapplic-powered malls, whose CSV directory IS the mall's
-                # own site data already.
+                # to Mapplic/MoA malls, whose own directory data IS already
+                # the mall's own site data.
                 recon = None
-                if is_mapplic:
-                    progress("reconcile", "Cross-check not applicable for this mall (Mapplic-powered) — skipped.")
+                if is_moa or is_mapplic:
+                    progress("reconcile", "Cross-check not applicable for this mall — skipped.")
                 elif reconcile_mod.available():
                     emit("phase", phase="reconcile", title="Cross-checking against the mall's website", ms=ms())
                     try:
@@ -269,10 +280,10 @@ def api_reconcile():
     body = request.get_json(silent=True) or {}
     venue = body.get("venue") or load_venues()[0]
 
-    if mallcore.is_mapplic_venue(venue):
+    if mallcore.is_mapplic_venue(venue) or mallcore.is_moa_venue(venue):
         return jsonify({
-            "error": "Cross-check reconciliation isn't available for Mapplic-powered malls "
-                     "(only Simon/Mappedin venues) — the CSV directory is already the mall's own data."
+            "error": "Cross-check reconciliation isn't available for this mall "
+                     "(only Simon/Mappedin venues) — its own directory data is already the source of truth."
         }), 501
 
     # Always compare against a FRESH Mappedin pull, not the last saved run —

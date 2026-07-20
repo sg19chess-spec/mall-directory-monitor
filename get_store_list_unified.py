@@ -360,6 +360,51 @@ def parse_mapplic_stores(getmapdata_url: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# PRIMARY PATH — Mall of America. Not a reusable template (unlike Mappedin/
+# Mapplic, which power many malls) — moaapi.net is a one-off public REST API
+# specific to this mall, hardcoded here rather than sniffed from the page.
+# One unauthenticated GET returns the entire tenant list, incl. unit codes.
+# ---------------------------------------------------------------------------
+
+MOA_TENANTS_URL = "https://www.moaapi.net/tenants.php"
+_MOA_CLOSED_STATUSES = {"Closed", "Closed for Remodeling"}
+
+
+def is_moa_url(url: str) -> bool:
+    return "mallofamerica.com" in urlparse(url).netloc.lower()
+
+
+def parse_moa_tenants() -> list[dict]:
+    """
+    moaapi.net/tenants.php returns every tenant AND non-tenant landmark
+    (elevators, parkway signage, etc. — these have no status/categories and
+    are filtered out). Each real tenant carries location.unit_number (the
+    unit code) and level (floor) directly — richer than Simon/Mapplic.
+    """
+    data = json.loads(_http_get(MOA_TENANTS_URL, headers={"User-Agent": "Mozilla/5.0"}))
+
+    stores = []
+    for t in data:
+        status_name = (t.get("status") or {}).get("name")
+        if not status_name or not t.get("categories"):
+            continue  # landmark entry, not a real tenant
+        if status_name in _MOA_CLOSED_STATUSES:
+            continue
+
+        loc = t.get("location") or {}
+        stores.append({
+            "name": t.get("name"),
+            "slug": t.get("url_slug"),
+            "floor": str(t["level"]) if t.get("level") is not None else None,
+            "location_in_outlet": loc.get("unit_number"),
+            "category": ", ".join(c["name"] for c in t.get("categories", []) if c.get("name")) or None,
+            "status": "Open" if status_name == "Normal" else status_name,
+        })
+
+    return sorted(stores, key=lambda x: x["name"])
+
+
+# ---------------------------------------------------------------------------
 # GENERAL FALLBACK — AI extraction, works on any site, any structure
 # ---------------------------------------------------------------------------
 
@@ -682,6 +727,12 @@ def main():
         help="Skip the fast Mapplic CSV path and go straight to the browser scraper "
              "(useful for testing the fallback).",
     )
+    parser.add_argument(
+        "--no-moa",
+        action="store_true",
+        help="Skip the fast Mall of America tenants API path and go straight to the "
+             "browser scraper (useful for testing the fallback).",
+    )
     args = parser.parse_args()
 
     # Hyperbrowser is only needed for the scraper/AI paths, not the Mappedin API
@@ -749,8 +800,18 @@ def main():
     method = None
     matched_template = None  # set only when the scraper/template path is used
 
+    if not args.no_moa and is_moa_url(args.url):
+        print("[INFO] Detected Mall of America — trying its public tenants API (fast, free, no browser)...")
+        try:
+            stores = parse_moa_tenants()
+            method = "moa_api"
+            print(f"[OK] MoA API returned {len(stores)} stores — no browser/AI needed.\n")
+        except Exception as e:
+            print(f"[WARN] MoA path failed ({e}); falling back to the browser scraper.\n")
+            stores = None
+
     venue = args.mappedin_venue or (None if args.no_mappedin else mappedin_venue_from_url(args.url))
-    if venue and not args.no_mappedin:
+    if stores is None and venue and not args.no_mappedin:
         print(f"[INFO] Trying Mappedin API for venue '{venue}' (fast, free, no browser)...")
         try:
             stores = parse_mappedin_venue(venue)
@@ -820,7 +881,7 @@ def main():
     out_path = Path(re.sub(r"[^a-zA-Z0-9]+", "_", args.url).strip("_") + ".stores.json")
 
     # --- Batch fetch each store's individual page for unit number, if requested ---
-    if args.with_unit_numbers and method and (method.startswith("mappedin_api") or method == "mapplic_csv"):
+    if args.with_unit_numbers and method and (method.startswith("mappedin_api") or method in ("mapplic_csv", "moa_api")):
         print("\n[INFO] --with-unit-numbers is unnecessary here: this path "
               "already returned unit codes. Skipping per-store fetching.")
     elif args.with_unit_numbers and matched_template:

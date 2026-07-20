@@ -248,6 +248,7 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const unitOf = s => s.location_in_outlet || s.floor || "—";
+const floorOf = s => s.floor ?? "—";
 
 let current = null, venues = [], running = false;
 
@@ -381,18 +382,19 @@ function renderTable(stores, rec) {
   // Show website-only stores inline too, so the table matches the mall's real roster.
   const missing = (rec && rec.missing_from_mappedin) ? rec.missing_from_mappedin : [];
   const rows = [
-    ...stores.map(s => ({ name:s.name, unit:unitOf(s), status:s.status || "Open", missing:false })),
-    ...missing.map(n => ({ name:n, unit:"—", status:"Not on map", missing:true })),
+    ...stores.map(s => ({ name:s.name, unit:unitOf(s), floor:floorOf(s), status:s.status || "Open", missing:false })),
+    ...missing.map(n => ({ name:n, unit:"—", floor:"—", status:"Not on map", missing:true })),
   ]
-    .filter(r => !q || r.name.toLowerCase().includes(q) || String(r.unit).toLowerCase().includes(q))
+    .filter(r => !q || r.name.toLowerCase().includes(q) || String(r.unit).toLowerCase().includes(q)
+                    || String(r.floor).toLowerCase().includes(q))
     .sort((a,b) => a.name.localeCompare(b.name))
     .map(r => {
       const cls = r.missing ? "pill miss" : (r.status === "Open" ? "pill open" : "pill soon");
-      return `<tr><td>${esc(r.name)}</td><td class="unit">${esc(r.unit)}</td>` +
+      return `<tr><td>${esc(r.name)}</td><td class="unit">${esc(r.floor)}</td><td class="unit">${esc(r.unit)}</td>` +
              `<td><span class="${cls}">${esc(r.status)}</span></td></tr>`;
     }).join("");
   $("#tableWrap").innerHTML = rows
-    ? `<table><thead><tr><th>Store</th><th>Unit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`
+    ? `<table><thead><tr><th>Store</th><th>Floor</th><th>Unit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p class="empty">No stores match “${esc(q)}”.</p>`;
 }
 

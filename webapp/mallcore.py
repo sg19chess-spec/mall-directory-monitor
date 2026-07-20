@@ -63,11 +63,22 @@ def venue_info(venue: str) -> dict:
     """Human-facing metadata for a venue, incl. links back to the mall's own
     site so the dashboard can always point at its source of truth.
 
-    Two venue shapes are supported:
+    Three venue shapes are supported:
       - a Simon/Mappedin slug, e.g. "simon-albertville"
       - a full directory-page URL for a Mapplic-powered mall,
         e.g. "https://www.friendlycenter.com/directory"
+      - a full directory-page URL for Mall of America (dedicated one-off API)
     """
+    if is_moa_venue(venue):
+        parsed = urlparse(venue)
+        return {
+            "slug": venue,
+            "name": "Mall of America",
+            "site": f"{parsed.scheme}://{parsed.netloc}",
+            "stores_url": venue,
+            "map_url": venue,
+        }
+
     if venue.startswith("http"):
         parsed = urlparse(venue)
         base = f"{parsed.scheme}://{parsed.netloc}"
@@ -277,9 +288,65 @@ def parse_mapplic_venue(url: str, on_progress=None) -> list[dict]:
 
 
 def is_mapplic_venue(venue: str) -> bool:
-    """Venue-shape check: a full URL means Mapplic; a bare slug means Simon/
-    Mappedin. Used by the webapp to route to the right parser."""
-    return venue.startswith("http")
+    """Venue-shape check: a full URL (that isn't Mall of America's dedicated
+    path) means Mapplic; a bare slug means Simon/Mappedin. Used by the webapp
+    to route to the right parser."""
+    return venue.startswith("http") and not is_moa_venue(venue)
+
+
+# --- Mall of America (dedicated one-off API, not a reusable mall template) --
+#
+# moaapi.net is a public REST API specific to this mall — hardcoded here
+# rather than sniffed from the page, unlike Mappedin/Mapplic which power many
+# malls. One unauthenticated GET returns the entire tenant list, incl. unit
+# codes and floor level.
+
+MOA_TENANTS_URL = "https://www.moaapi.net/tenants.php"
+_MOA_CLOSED_STATUSES = {"Closed", "Closed for Remodeling"}
+
+
+def is_moa_venue(venue: str) -> bool:
+    return venue.startswith("http") and "mallofamerica.com" in urlparse(venue).netloc.lower()
+
+
+def parse_moa_venue(venue: str | None = None, on_progress=None) -> list[dict]:
+    """
+    moaapi.net/tenants.php returns every tenant AND non-tenant landmark
+    (elevators, parkway signage, etc. — these have no status/categories and
+    are filtered out). Each real tenant carries location.unit_number (the
+    unit code) and level (floor) directly.
+
+    `venue` is accepted-but-unused so this has the same call signature as
+    parse_mappedin_venue/parse_mapplic_venue for the webapp's dispatch code.
+    """
+    def p(step, msg, **extra):
+        if on_progress:
+            on_progress(step, msg, **extra)
+
+    p("locations", "Downloading Mall of America's public tenant directory…")
+    data = json.loads(_http_get(MOA_TENANTS_URL, headers={"User-Agent": "Mozilla/5.0"}))
+
+    stores = []
+    for t in data:
+        status_name = (t.get("status") or {}).get("name")
+        if not status_name or not t.get("categories"):
+            continue  # landmark entry, not a real tenant
+        if status_name in _MOA_CLOSED_STATUSES:
+            continue
+
+        loc = t.get("location") or {}
+        stores.append({
+            "name": t.get("name"),
+            "slug": t.get("url_slug"),
+            "floor": str(t["level"]) if t.get("level") is not None else None,
+            "location_in_outlet": loc.get("unit_number"),
+            "category": ", ".join(c["name"] for c in t.get("categories", []) if c.get("name")) or None,
+            "status": "Open" if status_name == "Normal" else status_name,
+        })
+
+    stores.sort(key=lambda x: x["name"])
+    p("locations", f"Got {len(stores)} stores from the tenant directory.", count=len(stores))
+    return stores
 
 
 def venue_id_component(venue: str) -> str:

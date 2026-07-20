@@ -23,6 +23,7 @@ Setup:
 import os
 import re
 import io
+import csv
 import sys
 import json
 import time
@@ -294,6 +295,68 @@ def parse_mappedin_venue(venue: str) -> list[dict]:
             "status": status_by_name.get(name, "Open"),
         })
     return stores
+
+
+# ---------------------------------------------------------------------------
+# PRIMARY PATH — Mapplic CSV directory (Friendly Center & other Mapplic-
+# powered malls). Mapplic embeds a small `data-json="https://mapplic.com/
+# getMapData?id=..."` attribute on the map container; that JSON response in
+# turn references a `settings.csv` asset URL holding the ENTIRE tenant
+# directory as a flat CSV. No browser, no bot challenge, no AI extraction.
+# ---------------------------------------------------------------------------
+
+def mapplic_getmapdata_url_from_page(url: str) -> str | None:
+    """Fetch a page's raw HTML and look for its Mapplic map embed URL.
+    Returns None if the page isn't Mapplic-powered (caller falls back)."""
+    try:
+        html = _http_get(url, headers={"User-Agent": "Mozilla/5.0"}).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    m = re.search(r'(https://mapplic\.com/getMapData\?id=[A-Za-z0-9_-]+)', html)
+    return m.group(1) if m else None
+
+
+def parse_mapplic_stores(getmapdata_url: str) -> list[dict]:
+    """
+    Columns seen (Friendly Center): "Property Name","id","title","link",
+    "about","desc","image","layer","style","disable","hide","group","sample"
+    - disable=="TRUE" or title=="VACANT" -> not a real tenant, skip.
+    - group is a comma-separated tag list; doubles as category and carries
+      status tags like "Coming Soon" / "Now Open" / "Temporarily Closed".
+    - id is the map's own unit code (e.g. "u103").
+    """
+    map_data = json.loads(_http_get(getmapdata_url, headers={"User-Agent": "Mozilla/5.0"}))
+    csv_url = (map_data.get("settings") or {}).get("csv")
+    if not csv_url:
+        raise RuntimeError("Mapplic map data has no settings.csv URL")
+
+    csv_bytes = _http_get(csv_url, headers={"User-Agent": "Mozilla/5.0"})
+    rows = csv.DictReader(io.StringIO(csv_bytes.decode("utf-8-sig")))
+
+    status_tags = ("Coming Soon", "Now Open", "Temporarily Closed")
+
+    stores = []
+    for row in rows:
+        title = (row.get("title") or "").strip()
+        if not title or title.upper() == "VACANT":
+            continue
+        if (row.get("disable") or "").strip().upper() == "TRUE":
+            continue
+
+        tags = [t.strip() for t in (row.get("group") or "").split(",") if t.strip()]
+        status = next((t for t in tags if t in status_tags), "Open")
+        category = ", ".join(t for t in tags if t not in status_tags) or None
+
+        stores.append({
+            "name": title,
+            "slug": (row.get("link") or "").strip() or None,
+            "floor": None,
+            "location_in_outlet": (row.get("id") or "").strip() or None,
+            "category": category,
+            "status": status,
+        })
+
+    return sorted(stores, key=lambda x: x["name"])
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +676,12 @@ def main():
         help="Skip the fast Mappedin API path and go straight to the browser scraper "
              "(useful for testing the fallback).",
     )
+    parser.add_argument(
+        "--no-mapplic",
+        action="store_true",
+        help="Skip the fast Mapplic CSV path and go straight to the browser scraper "
+             "(useful for testing the fallback).",
+    )
     args = parser.parse_args()
 
     # Hyperbrowser is only needed for the scraper/AI paths, not the Mappedin API
@@ -693,6 +762,19 @@ def main():
             print(f"[WARN] Mappedin path failed ({e}); falling back to the browser scraper.\n")
             stores = None
 
+    if stores is None and not args.no_mapplic:
+        mapplic_url = mapplic_getmapdata_url_from_page(args.url)
+        if mapplic_url:
+            print(f"[INFO] Detected a Mapplic-powered map ({mapplic_url}) — "
+                  f"trying its CSV directory feed (fast, free, no browser)...")
+            try:
+                stores = parse_mapplic_stores(mapplic_url)
+                method = "mapplic_csv"
+                print(f"[OK] Mapplic CSV returned {len(stores)} stores — no browser/AI needed.\n")
+            except Exception as e:
+                print(f"[WARN] Mapplic path failed ({e}); falling back to the browser scraper.\n")
+                stores = None
+
     # -----------------------------------------------------------------------
     # FALLBACK: Hyperbrowser scrape -> known template -> AI extraction.
     # -----------------------------------------------------------------------
@@ -738,8 +820,8 @@ def main():
     out_path = Path(re.sub(r"[^a-zA-Z0-9]+", "_", args.url).strip("_") + ".stores.json")
 
     # --- Batch fetch each store's individual page for unit number, if requested ---
-    if args.with_unit_numbers and method and method.startswith("mappedin_api"):
-        print("\n[INFO] --with-unit-numbers is unnecessary here: the Mappedin path "
+    if args.with_unit_numbers and method and (method.startswith("mappedin_api") or method == "mapplic_csv"):
+        print("\n[INFO] --with-unit-numbers is unnecessary here: this path "
               "already returned unit codes. Skipping per-store fetching.")
     elif args.with_unit_numbers and matched_template:
         base_url = args.url.rstrip("/").rsplit("/stores", 1)[0]

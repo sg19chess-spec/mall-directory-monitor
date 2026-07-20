@@ -105,8 +105,9 @@ def api_run(rid):
 def api_do_run():
     body = request.get_json(silent=True) or {}
     venue = body.get("venue") or load_venues()[0]
+    is_mapplic = mallcore.is_mapplic_venue(venue)
     try:
-        stores = mallcore.parse_mappedin_venue(venue)
+        stores = mallcore.parse_mapplic_venue(venue) if is_mapplic else mallcore.parse_mappedin_venue(venue)
     except Exception as e:
         return jsonify({"error": f"Scrape failed for '{venue}': {e}"}), 502
 
@@ -114,12 +115,12 @@ def api_do_run():
     changes = mallcore.diff_stores(prev.get("stores") if prev else None, stores) if prev else None
 
     now = datetime.datetime.now()
-    rid = f"{venue}__{now.strftime('%Y%m%d-%H%M%S')}"
+    rid = f"{mallcore.venue_id_component(venue)}__{now.strftime('%Y%m%d-%H%M%S')}"
     doc = {
         "id": rid,
         "venue": venue,
         "generated": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "method": f"mappedin_api:{venue}",
+        "method": f"{'mapplic_csv' if is_mapplic else 'mappedin_api'}:{venue}",
         "stores": stores,
         "changes": changes,
     }
@@ -165,10 +166,16 @@ def api_run_stream():
             try:
                 emit("start", venue=venue, info=mallcore.venue_info(venue), ms=ms())
 
-                # --- Source A: Mappedin (fast, has unit numbers) ---------
-                emit("phase", phase="mappedin", title="Reading the mall's map data", ms=ms())
-                stores = mallcore.parse_mappedin_venue(venue, on_progress=progress)
-                emit("phase_done", phase="mappedin", count=len(stores), ms=ms())
+                is_mapplic = mallcore.is_mapplic_venue(venue)
+                phase = "mapplic" if is_mapplic else "mappedin"
+
+                # --- Source A: the mall's map data (fast, primary) -------
+                emit("phase", phase=phase, title="Reading the mall's map data", ms=ms())
+                if is_mapplic:
+                    stores = mallcore.parse_mapplic_venue(venue, on_progress=progress)
+                else:
+                    stores = mallcore.parse_mappedin_venue(venue, on_progress=progress)
+                emit("phase_done", phase=phase, count=len(stores), ms=ms())
 
                 # --- Save + diff vs previous ----------------------------
                 emit("phase", phase="save", title="Saving snapshot & comparing to last run", ms=ms())
@@ -176,12 +183,12 @@ def api_run_stream():
                 changes = mallcore.diff_stores(prev.get("stores") if prev else None, stores) if prev else None
 
                 utc = mallcore.now_utc_iso()
-                rid = f"{venue}__{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+                rid = f"{mallcore.venue_id_component(venue)}__{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')}"
                 doc = {
                     "id": rid, "venue": venue,
                     "generated_utc": utc,
                     "generated": mallcore.to_ist_display(utc),
-                    "method": f"mappedin_api:{venue}",
+                    "method": f"{'mapplic_csv' if is_mapplic else 'mappedin_api'}:{venue}",
                     "stores": stores, "changes": changes,
                 }
                 if changes is None:
@@ -192,8 +199,13 @@ def api_run_stream():
                              else f"Found {n} change(s) since the last run.")
 
                 # --- Source B: the mall's own website (trust layer) ------
+                # Simon-specific (compares against Mappedin) — not applicable
+                # to Mapplic-powered malls, whose CSV directory IS the mall's
+                # own site data already.
                 recon = None
-                if reconcile_mod.available():
+                if is_mapplic:
+                    progress("reconcile", "Cross-check not applicable for this mall (Mapplic-powered) — skipped.")
+                elif reconcile_mod.available():
                     emit("phase", phase="reconcile", title="Cross-checking against the mall's website", ms=ms())
                     try:
                         recon = reconcile_mod.reconcile(stores, venue, on_progress=progress)
@@ -256,6 +268,12 @@ def api_reconcile():
 
     body = request.get_json(silent=True) or {}
     venue = body.get("venue") or load_venues()[0]
+
+    if mallcore.is_mapplic_venue(venue):
+        return jsonify({
+            "error": "Cross-check reconciliation isn't available for Mapplic-powered malls "
+                     "(only Simon/Mappedin venues) — the CSV directory is already the mall's own data."
+        }), 501
 
     # Always compare against a FRESH Mappedin pull, not the last saved run —
     # this is a "right now vs right now" check, not a diff against history.

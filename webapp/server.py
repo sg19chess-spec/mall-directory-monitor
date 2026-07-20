@@ -14,6 +14,8 @@ Endpoints:
   GET  /api/run/<id>/shapes.geojson  -> that run's store footprint polygons (QGIS-ready)
   GET  /api/run/<id>/changes.geojson -> geometry diff vs the previous run for this venue
                                         (expansions/removals/splits/merges — see geodiff.py)
+  GET  /api/run/<id>/qgis             -> self-contained .qgz: both layers above, pre-styled
+                                        and pre-colored, ready to open in QGIS (see qgis_builder.py)
   GET  /api/store/<id>/history        -> one store's footprint area over time
 
 Run history is persisted via storage.py: Postgres when DATABASE_URL is set
@@ -45,6 +47,7 @@ import reconcile as reconcile_mod
 import geometry_store
 import geodiff
 import geoexport
+import qgis_builder
 
 BASE = pathlib.Path(__file__).parent
 STATIC = BASE / "static"
@@ -370,6 +373,27 @@ def api_run_changes_geojson(rid):
     fc = geoexport.build_changes_geojson(changes)
     fname = f"{mallcore.venue_id_component(doc.get('venue', 'mall'))}-{rid}-changes.geojson"
     return _geojson_response(fc, fname)
+
+
+@app.get("/api/run/<rid>/qgis")
+def api_run_qgis(rid):
+    """One click -> a self-contained QGIS project for this run: 'Current
+    Stores' (categorized by status) and 'Floorplan Changes' (categorized by
+    change type, colored per geoexport.COLOR_RGBA), both embedded in the
+    .qgz so nothing else needs to be downloaded separately."""
+    doc = storage.get_run(rid)
+    if doc is None:
+        return jsonify({"error": "run not found"}), 404
+    shapes_fc = geoexport.build_snapshot_geojson(doc.get("stores", []))
+    changes_fc = geoexport.build_changes_geojson(doc.get("geometry_changes") or [])
+    venue_name = mallcore.venue_info(doc.get("venue", "")).get("name", "Mall")
+    qgz_bytes = qgis_builder.build_qgz(venue_name, shapes_fc, changes_fc)
+    fname = f"{mallcore.venue_id_component(doc.get('venue', 'mall'))}-{rid}.qgz"
+    return Response(
+        qgz_bytes,
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.get("/api/store/<store_id>/history")

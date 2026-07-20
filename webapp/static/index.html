@@ -264,6 +264,7 @@
         <button class="ghost" id="downloadBtn" type="button">Download filtered (CSV)</button>
         <button class="ghost" id="shapesBtn" type="button">Download shapes (GeoJSON)</button>
         <button class="ghost" id="changesGeoBtn" type="button">Download changes (GeoJSON)</button>
+        <button class="ghost" id="qgisBtn" type="button">Open in QGIS (.qgz)</button>
       </div>
     </div>
     <div class="facets" id="facets"></div>
@@ -377,6 +378,7 @@ function render(doc) {
   const hasShapes = stores.some(s => s.geometry);
   $("#shapesBtn").disabled = !hasShapes;
   $("#changesGeoBtn").disabled = !(doc.geometry_changes && doc.geometry_changes.length);
+  $("#qgisBtn").disabled = !hasShapes;
 }
 
 const CHANGE_COLOR = {
@@ -633,6 +635,9 @@ $("#shapesBtn").addEventListener("click", () => {
 });
 $("#changesGeoBtn").addEventListener("click", () => {
   if (current) window.location.href = "/api/run/" + encodeURIComponent(current.id) + "/changes.geojson";
+});
+$("#qgisBtn").addEventListener("click", () => {
+  if (current) window.location.href = "/api/run/" + encodeURIComponent(current.id) + "/qgis";
 });
 
 (async () => {

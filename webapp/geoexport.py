@@ -12,12 +12,24 @@ COLORS = {
     "NEW": "blue",
     "EXPANDED": "green",
     "REMOVED": "red",
-    "SHRUNK": "yellow",
+    "SHRUNK": "orange",
     "BOUNDARY_MODIFIED": "yellow",
-    "SPLIT": "orange",
-    "MERGE": "orange",
-    "ABSORBED_NEIGHBOR": "purple",
+    "SPLIT": "purple",
+    "MERGE": "black",
+    "ABSORBED_NEIGHBOR": "magenta",
     "CRS_MISMATCH": "gray",
+}
+# RGBA used by qgis_builder.py's categorized renderer — same mapping, QGIS form.
+COLOR_RGBA = {
+    "NEW": "51,102,204,255",
+    "EXPANDED": "40,167,69,255",
+    "REMOVED": "220,53,69,255",
+    "SHRUNK": "253,126,20,255",
+    "BOUNDARY_MODIFIED": "255,193,7,255",
+    "SPLIT": "111,66,193,255",
+    "MERGE": "20,20,20,255",
+    "ABSORBED_NEIGHBOR": "214,51,132,255",
+    "CRS_MISMATCH": "128,128,128,255",
 }
 
 

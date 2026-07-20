@@ -11,10 +11,20 @@ Endpoints:
   POST /api/reconcile {venue}-> fresh primary-source pull vs a live scrape of the
                                  mall's own directory page; surfaces differences in
                                  BOTH directions (see reconcile.py)
+  GET  /api/run/<id>/shapes.geojson  -> that run's store footprint polygons (QGIS-ready)
+  GET  /api/run/<id>/changes.geojson -> geometry diff vs the previous run for this venue
+                                        (expansions/removals/splits/merges — see geodiff.py)
+  GET  /api/store/<id>/history        -> one store's footprint area over time
 
 Run history is persisted via storage.py: Postgres when DATABASE_URL is set
 (Render), else local JSON files (dev). That history is the log — nothing is
 overwritten, so "Previous runs" browses the full timeline.
+
+Geometry snapshots are a separate, always-local-JSON timeline (geometry_store.py)
+that geodiff.py compares run-to-run to detect footprint changes — see
+mallcore.py's parse_*_venue() functions for where each venue's geometry comes
+from (real lon/lat for Mappedin, local pixel space for Mapplic, none yet for
+Mall of America).
 
 Local:   pip install -r requirements.txt ; python server.py -> http://127.0.0.1:5000
 Render:  gunicorn server:app --bind 0.0.0.0:$PORT   (see render.yaml)
@@ -32,6 +42,9 @@ from flask import Flask, request, jsonify, send_from_directory, Response, stream
 import mallcore
 import storage
 import reconcile as reconcile_mod
+import geometry_store
+import geodiff
+import geoexport
 
 BASE = pathlib.Path(__file__).parent
 STATIC = BASE / "static"
@@ -124,6 +137,11 @@ def api_do_run():
     now = datetime.datetime.now()
     rid = f"{mallcore.venue_id_component(venue)}__{now.strftime('%Y%m%d-%H%M%S')}"
     method_prefix = "moa_api" if is_moa else ("mapplic_csv" if is_mapplic else "mappedin_api")
+
+    geometry_store.save_snapshot(venue, rid, stores)
+    geometry_changes = geodiff.diff_snapshots(geometry_store.previous_snapshot(venue),
+                                               geometry_store.latest_snapshot(venue))
+
     doc = {
         "id": rid,
         "venue": venue,
@@ -131,6 +149,7 @@ def api_do_run():
         "method": f"{method_prefix}:{venue}",
         "stores": stores,
         "changes": changes,
+        "geometry_changes": geometry_changes,
     }
     storage.save_run(doc)
     return jsonify(doc)
@@ -196,12 +215,17 @@ def api_run_stream():
                 utc = mallcore.now_utc_iso()
                 rid = f"{mallcore.venue_id_component(venue)}__{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')}"
                 method_prefix = "moa_api" if is_moa else ("mapplic_csv" if is_mapplic else "mappedin_api")
+                geometry_store.save_snapshot(venue, rid, stores)
+                geometry_changes = geodiff.diff_snapshots(geometry_store.previous_snapshot(venue),
+                                                           geometry_store.latest_snapshot(venue))
+
                 doc = {
                     "id": rid, "venue": venue,
                     "generated_utc": utc,
                     "generated": mallcore.to_ist_display(utc),
                     "method": f"{method_prefix}:{venue}",
                     "stores": stores, "changes": changes,
+                    "geometry_changes": geometry_changes,
                 }
                 if changes is None:
                     progress("save", "First run for this mall — nothing to compare against yet.")
@@ -209,6 +233,10 @@ def api_run_stream():
                     n = len(changes["added"]) + len(changes["removed"]) + len(changes["moved"])
                     progress("save", "No changes since the last run." if n == 0
                              else f"Found {n} change(s) since the last run.")
+                if geometry_changes:
+                    progress("save", f"Detected {len(geometry_changes)} footprint change(s) "
+                                      "(expansions, removals, splits, etc.) — see the shape export.",
+                             level="warn")
 
                 # --- Source B: the mall's own website (trust layer) ------
                 # Cross-checks the primary snapshot against a live scrape of
@@ -306,6 +334,65 @@ def api_reconcile():
 
     result["checked_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return jsonify(result)
+
+
+def _geojson_response(doc: dict, filename: str) -> Response:
+    return Response(
+        json.dumps(doc),
+        mimetype="application/geo+json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/run/<rid>/shapes.geojson")
+def api_run_shapes_geojson(rid):
+    """Current store footprint polygons for this run — the 'snapshot' layer,
+    QGIS-ready as-is (real lon/lat for Mappedin venues, local pixel space for
+    Mapplic venues — see each store's geometry_crs)."""
+    doc = storage.get_run(rid)
+    if doc is None:
+        return jsonify({"error": "run not found"}), 404
+    fc = geoexport.build_snapshot_geojson(doc.get("stores", []))
+    fname = f"{mallcore.venue_id_component(doc.get('venue', 'mall'))}-{rid}-shapes.geojson"
+    return _geojson_response(fc, fname)
+
+
+@app.get("/api/run/<rid>/changes.geojson")
+def api_run_changes_geojson(rid):
+    """Geometry diff vs the previous run for this venue — expansions,
+    removals, splits, merges, absorbed neighbors (see geodiff.py). This is
+    the primary deliverable: QGIS can symbolize categorically straight off
+    each feature's 'color' property."""
+    doc = storage.get_run(rid)
+    if doc is None:
+        return jsonify({"error": "run not found"}), 404
+    changes = doc.get("geometry_changes") or []
+    fc = geoexport.build_changes_geojson(changes)
+    fname = f"{mallcore.venue_id_component(doc.get('venue', 'mall'))}-{rid}-changes.geojson"
+    return _geojson_response(fc, fname)
+
+
+@app.get("/api/store/<store_id>/history")
+def api_store_history(store_id):
+    """One store's footprint area over time, read straight from the geometry
+    snapshot timeline (no new storage — just filters existing snapshots)."""
+    venue = request.args.get("venue") or load_venues()[0]
+    history = []
+    for run_id in geometry_store.list_snapshots(venue):
+        snap = geometry_store.load_snapshot(venue, run_id)
+        if not snap:
+            continue
+        for s in snap.get("stores", []):
+            if s.get("id") == store_id and s.get("geometry"):
+                from shapely.geometry import shape as _shape
+                history.append({
+                    "run_id": run_id,
+                    "name": s.get("name"),
+                    "area": _shape(s["geometry"]).area,
+                    "geometry_crs": s.get("geometry_crs"),
+                })
+                break
+    return jsonify({"venue": venue, "store_id": store_id, "history": history})
 
 
 if __name__ == "__main__":

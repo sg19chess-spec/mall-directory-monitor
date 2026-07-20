@@ -163,7 +163,8 @@
   button.ghost { font:inherit; font-weight:600; font-size:.8rem; color:var(--accent);
                  background:transparent; border:1px solid var(--line); border-radius:8px;
                  padding:.4rem .7rem; cursor:pointer; }
-  button.ghost:hover { background:var(--accent-soft); }
+  button.ghost:hover:not(:disabled) { background:var(--accent-soft); }
+  button.ghost:disabled { opacity:.45; cursor:not-allowed; }
   td.onsite { text-align:center; }
   .pill.extra { background:var(--warn-soft); color:var(--warn); }
 </style>
@@ -250,12 +251,19 @@
     <div id="changes"><p class="muted">Run a check to see what changed.</p></div>
   </div>
 
+  <div class="card" id="geoChangesCard">
+    <h2>Shape changes since previous run</h2>
+    <div id="geoChanges"><p class="muted">Run a check to see if any store footprints changed.</p></div>
+  </div>
+
   <div class="card">
     <div class="thead-row">
       <h2 style="margin:0">Store directory</h2>
       <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
         <input class="filter" id="filter" type="search" placeholder="Filter stores…" aria-label="Filter stores">
         <button class="ghost" id="downloadBtn" type="button">Download filtered (CSV)</button>
+        <button class="ghost" id="shapesBtn" type="button">Download shapes (GeoJSON)</button>
+        <button class="ghost" id="changesGeoBtn" type="button">Download changes (GeoJSON)</button>
       </div>
     </div>
     <div class="facets" id="facets"></div>
@@ -363,7 +371,32 @@ function render(doc) {
   facetSelections = null;   // new run/venue: reset facet picks, keep text filter
   renderVerdict(doc, rec, miss, extra);
   renderChanges(doc.changes);
+  renderGeoChanges(doc.geometry_changes);
   renderTable(stores, rec);
+
+  const hasShapes = stores.some(s => s.geometry);
+  $("#shapesBtn").disabled = !hasShapes;
+  $("#changesGeoBtn").disabled = !(doc.geometry_changes && doc.geometry_changes.length);
+}
+
+const CHANGE_COLOR = {
+  NEW: "good", EXPANDED: "good", REMOVED: "bad", SHRUNK: "warn",
+  BOUNDARY_MODIFIED: "warn", SPLIT: "warn", MERGE: "warn",
+  ABSORBED_NEIGHBOR: "bad", CRS_MISMATCH: "warn",
+};
+function renderGeoChanges(changes) {
+  const el = $("#geoChanges");
+  if (!changes) { el.innerHTML = `<p class="muted">No geometry snapshot to compare against yet.</p>`; return; }
+  if (!changes.length) { el.innerHTML = `<p class="muted">No footprint changes since the previous run.</p>`; return; }
+  const rows = changes.map(c => {
+    const cls = CHANGE_COLOR[c.change] || "";
+    const who = c.store || (Array.isArray(c.old) ? c.old.join(" + ") : c.old) || "";
+    const detail = c.area_change_percent != null ? ` (${c.area_change_percent > 0 ? "+" : ""}${c.area_change_percent}% area)`
+      : Array.isArray(c.new) ? ` → ${c.new.join(", ")}` : (typeof c.new === "string" ? ` → ${c.new}` : "");
+    return `<li><span class="pill ${cls === "good" ? "open" : cls === "bad" ? "miss" : "soon"}">${esc(c.change)}</span> ` +
+           `<b>${esc(who)}</b>${esc(detail)} <span class="muted">(${esc(c.severity)})</span></li>`;
+  }).join("");
+  el.innerHTML = `<ul>${rows}</ul>`;
 }
 
 function renderVerdict(doc, rec, miss, extra) {
@@ -595,6 +628,12 @@ $("#filter").addEventListener("input", () => {
   if (current) renderTable(current.stores || [], current.reconciliation);
 });
 $("#downloadBtn").addEventListener("click", downloadCSV);
+$("#shapesBtn").addEventListener("click", () => {
+  if (current) window.location.href = "/api/run/" + encodeURIComponent(current.id) + "/shapes.geojson";
+});
+$("#changesGeoBtn").addEventListener("click", () => {
+  if (current) window.location.href = "/api/run/" + encodeURIComponent(current.id) + "/changes.geojson";
+});
 
 (async () => {
   try { await loadVenues(); await loadRuns(); }

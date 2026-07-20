@@ -14,10 +14,16 @@ import re
 import io
 import csv
 import json
+import math
+import hashlib
 import zipfile
+import xml.etree.ElementTree as ET
 import urllib.request
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+
+from shapely.geometry import shape as _shapely_shape
+from shapely import wkb as _shapely_wkb
 
 try:
     from zoneinfo import ZoneInfo
@@ -57,6 +63,20 @@ def _prettify_domain(netloc: str) -> str:
         r" \1", label, flags=re.IGNORECASE,
     )
     return " ".join(w.capitalize() for w in label.split())
+
+
+def geometry_hash(geometry: dict | None) -> str | None:
+    """Stable fingerprint of a polygon's shape, independent of which vertex it
+    starts on or which way its ring winds — two GeoJSON encodings of the same
+    physical footprint must hash identically, or every re-scrape of an
+    unchanged store would look like a geometry change to geodiff.py."""
+    if not geometry:
+        return None
+    try:
+        g = _shapely_shape(geometry).normalize()
+    except Exception:
+        return None
+    return hashlib.sha256(_shapely_wkb.dumps(g)).hexdigest()
 
 
 def venue_info(venue: str) -> dict:
@@ -199,23 +219,35 @@ def parse_mappedin_venue(venue: str, on_progress=None) -> list[dict]:
     p("spaces", f"Scanned {len(space_features)} mapped shapes.", features=len(space_features))
 
     unit_by_name: dict[str, str] = {}
+    geometry_by_name: dict[str, dict] = {}
     for feat in space_features:
         props = feat.get("properties", {}) or {}
         name = (props.get("details", {}) or {}).get("name")
         ext = props.get("externalId")
         if name in store_names and ext and STORE_UNIT_RE.match(ext) and name not in unit_by_name:
             unit_by_name[name] = ext
+            geometry = feat.get("geometry")
+            if geometry:
+                geometry_by_name[name] = geometry
     p("spaces", f"Matched {len(unit_by_name)} of {len(store_names)} stores to a unit number.",
       matched=len(unit_by_name))
 
     stores = []
     for name in sorted(store_names):
         unit = unit_by_name.get(name)
+        geometry = geometry_by_name.get(name)
         stores.append({
             "name": name, "slug": None, "floor": unit,
             "location_in_outlet": unit, "category": None,
             "status": status_by_name.get(name, "Open"),
             "raw": raw_by_name.get(name),
+            # Real-world footprint polygon (WGS84 lon/lat), straight from
+            # Mappedin's own venue export — already in the zip we download for
+            # unit numbers, previously discarded. See geodiff.py/geoexport.py.
+            "geometry": geometry,
+            "geometry_crs": "EPSG:4326" if geometry else None,
+            "geometry_hash": geometry_hash(geometry),
+            "source_geometry": {"provider": "mappedin", "external_id": unit} if geometry else None,
         })
     return stores
 
@@ -226,6 +258,157 @@ def parse_mappedin_venue(venue: str, on_progress=None) -> list[dict]:
 # attribute on the map container; that JSON in turn references a
 # `settings.csv` asset URL holding the ENTIRE tenant directory as a flat
 # CSV. No bot challenge, no per-store fetching.
+
+def _svg_transform_fn(transform: str | None):
+    """Parses the only transform shapes seen live on Mapplic SVGs:
+    'translate(tx,ty) rotate(deg)' (rotate around origin, applied after
+    translate — matches SVG's left-to-right transform composition). Returns
+    an (x, y) -> (x, y) function; identity if transform is absent/unrecognized
+    (callers are expected to warn on the unrecognized case, not this helper)."""
+    if not transform:
+        return lambda x, y: (x, y)
+    tx = ty = 0.0
+    deg = 0.0
+    m = re.search(r"translate\(\s*([-\d.]+)[ ,]+([-\d.]+)\s*\)", transform)
+    if m:
+        tx, ty = float(m.group(1)), float(m.group(2))
+    m = re.search(r"rotate\(\s*([-\d.]+)", transform)
+    if m:
+        deg = float(m.group(1))
+    rad = math.radians(deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+
+    def fn(x, y):
+        x, y = x + tx, y + ty
+        return (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
+
+    return fn
+
+
+def _svg_path_points(d: str) -> list[tuple[float, float]]:
+    """Straight-line-segment approximation of an SVG path's M/L/H/V/C/Z
+    commands — enough fidelity for simple mall-unit outlines (rectangles and
+    near-rectangles), not general bezier-accurate rendering. Curve commands
+    (C/S/Q/T) are approximated by their endpoint only, dropping control
+    points, which is fine for footprint-area/overlap comparisons."""
+    tokens = re.findall(r"([MLHVCSQTZmlhvcsqtz])|(-?\d*\.?\d+(?:e-?\d+)?)", d)
+    pts: list[tuple[float, float]] = []
+    cmd = None
+    cur = [0.0, 0.0]
+    nums: list[float] = []
+
+    def args_needed(c):
+        return {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Q": 4, "T": 2, "Z": 0}.get(c.upper(), 2)
+
+    for letter, num in tokens:
+        if letter:
+            cmd = letter
+            nums = []
+            if cmd.upper() == "Z":
+                if pts:
+                    pts.append(pts[0])
+            continue
+        nums.append(float(num))
+        if len(nums) == args_needed(cmd):
+            relative = cmd.islower()
+            C = cmd.upper()
+            if C == "H":
+                x = cur[0] + nums[0] if relative else nums[0]
+                y = cur[1]
+            elif C == "V":
+                x = cur[0]
+                y = cur[1] + nums[0] if relative else nums[0]
+            elif C in ("M", "L", "T"):
+                x, y = nums
+                if relative:
+                    x, y = cur[0] + x, cur[1] + y
+            elif C in ("C", "S", "Q"):
+                x, y = nums[-2], nums[-1]
+                if relative:
+                    x, y = cur[0] + x, cur[1] + y
+            else:
+                nums = []
+                continue
+            cur = [x, y]
+            pts.append((x, y))
+            nums = []
+    return pts
+
+
+def _svg_shape_to_polygon(shape: dict) -> dict | None:
+    """A parsed SVG <rect>/<path> (see _fetch_mapplic_shapes) -> a GeoJSON
+    Polygon in the SVG's own local pixel space."""
+    fn = _svg_transform_fn(shape.get("transform"))
+    if shape["kind"] == "rect":
+        x, y = shape["x"], shape["y"]
+        w, h = shape["width"], shape["height"]
+        corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]
+    else:  # path
+        corners = _svg_path_points(shape["d"])
+        if len(corners) < 3:
+            return None
+        if corners[0] != corners[-1]:
+            corners = corners + [corners[0]]
+    ring = [list(fn(x, y)) for x, y in corners]
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
+def _fetch_mapplic_shapes(map_data: dict, on_progress=None) -> tuple[dict[str, dict], dict]:
+    """Downloads every SVG referenced in map_data['layers'] and returns
+    {location_id: {"kind": "rect"|"path", ...raw attrs, "transform": ...}},
+    plus the pixel dimensions of the (first) map SVG for context."""
+    def p(step, msg, **extra):
+        if on_progress:
+            on_progress(step, msg, **extra)
+
+    shapes: dict[str, dict] = {}
+    map_size: dict = {}
+    for layer in (map_data.get("layers") or []):
+        svg_url = layer.get("file")
+        if not svg_url or not svg_url.lower().split("?")[0].endswith(".svg"):
+            continue
+        try:
+            svg_bytes = _http_get(svg_url, headers={"User-Agent": "Mozilla/5.0"})
+        except Exception as e:
+            p("shapes", f"Couldn't fetch layer SVG '{layer.get('id')}': {e}", level="warn")
+            continue
+        try:
+            root = ET.fromstring(svg_bytes)
+        except ET.ParseError as e:
+            p("shapes", f"Layer SVG '{layer.get('id')}' didn't parse as XML: {e}", level="warn")
+            continue
+
+        if not map_size:
+            vb = root.get("viewBox")
+            if vb:
+                parts = vb.split()
+                if len(parts) == 4:
+                    map_size = {"width": float(parts[2]), "height": float(parts[3])}
+            elif root.get("width") and root.get("height"):
+                try:
+                    map_size = {"width": float(root.get("width")), "height": float(root.get("height"))}
+                except ValueError:
+                    pass
+
+        for el in root.iter():
+            tag = el.tag.split("}")[-1]
+            loc_id = el.get("id")
+            if not loc_id or loc_id in shapes:
+                continue
+            transform = el.get("transform")
+            if tag == "rect":
+                try:
+                    shapes[loc_id] = {
+                        "kind": "rect", "transform": transform,
+                        "x": float(el.get("x", 0)), "y": float(el.get("y", 0)),
+                        "width": float(el.get("width", 0)), "height": float(el.get("height", 0)),
+                    }
+                except ValueError:
+                    continue
+            elif tag == "path" and el.get("d"):
+                shapes[loc_id] = {"kind": "path", "transform": transform, "d": el.get("d")}
+    return shapes, map_size
+
 
 def mapplic_getmapdata_url_from_page(url: str) -> str | None:
     """Fetch a page's raw HTML and look for its Mapplic map embed URL.
@@ -267,8 +450,13 @@ def parse_mapplic_venue(url: str, on_progress=None) -> list[dict]:
     csv_bytes = _http_get(csv_url, headers={"User-Agent": "Mozilla/5.0"})
     rows = csv.DictReader(io.StringIO(csv_bytes.decode("utf-8-sig")))
 
+    p("shapes", "Reading the map's SVG for each unit's exact footprint…")
+    svg_shapes, map_size = _fetch_mapplic_shapes(map_data, on_progress=on_progress)
+    p("shapes", f"Found {len(svg_shapes)} mapped shapes on the floor plan.", shapes=len(svg_shapes))
+
     status_tags = ("Coming Soon", "Now Open", "Temporarily Closed")
     stores = []
+    matched_shapes = 0
     for row in rows:
         title = (row.get("title") or "").strip()
         if not title or title.upper() == "VACANT":
@@ -280,17 +468,35 @@ def parse_mapplic_venue(url: str, on_progress=None) -> list[dict]:
         status = next((t for t in tags if t in status_tags), "Open")
         category = ", ".join(t for t in tags if t not in status_tags) or None
 
+        loc_id = (row.get("id") or "").strip() or None
+        svg_shape = svg_shapes.get(loc_id) if loc_id else None
+        geometry = _svg_shape_to_polygon(svg_shape) if svg_shape else None
+        if geometry:
+            matched_shapes += 1
+
         stores.append({
             "name": title,
             "slug": (row.get("link") or "").strip() or None,
             "floor": None,
-            "location_in_outlet": (row.get("id") or "").strip() or None,
+            "location_in_outlet": loc_id,
             "category": category,
             "status": status,
             "raw": dict(row),
+            # Pixel-space footprint from the mall's own SVG floor plan — no
+            # lon/lat anchor exists in Mapplic's data, so this can't be
+            # auto-georeferenced (see geodiff.py's CRS guard). source_geometry
+            # keeps the un-converted SVG shape so a future fix to
+            # _svg_shape_to_polygon can re-derive from ground truth.
+            "geometry": geometry,
+            "geometry_crs": "SVG_PIXEL" if geometry else None,
+            "geometry_hash": geometry_hash(geometry),
+            "source_geometry": {"provider": "mapplic", "type": f"svg_{svg_shape['kind']}", "raw": svg_shape}
+                if svg_shape else None,
+            "map_size": map_size or None,
         })
     stores.sort(key=lambda x: x["name"])
-    p("locations", f"Got {len(stores)} stores from the CSV directory.", count=len(stores))
+    p("locations", f"Got {len(stores)} stores from the CSV directory "
+                   f"({matched_shapes} matched to an exact footprint).", count=len(stores))
     return stores
 
 
@@ -354,6 +560,14 @@ def parse_moa_venue(venue: str | None = None, on_progress=None) -> list[dict]:
             # what distinguishes real Retail/Dining/Attraction tenants from
             # rides, parking, offices, and facilities that the API also lists.
             "raw": {k: v for k, v in t.items() if k not in ("media", "hours")},
+            # No geometry source found in tenants.php (only unit_number/level).
+            # MoA's interactive map almost certainly has its own geometry
+            # API/SVG, not yet reverse-engineered — explicit None rather than
+            # omitted so every parser hands geodiff.py the same shape.
+            "geometry": None,
+            "geometry_crs": None,
+            "geometry_hash": None,
+            "source_geometry": None,
         })
 
     stores.sort(key=lambda x: x["name"])

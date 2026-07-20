@@ -8,9 +8,9 @@ Endpoints:
   GET  /api/run/<id>         -> one full run snapshot
   POST /api/run {venue}      -> scrape now, diff vs previous, save snapshot, return it
   GET  /api/capabilities     -> which optional features are configured (e.g. reconciliation)
-  POST /api/reconcile {venue}-> fresh Mappedin pull vs a live Simon-site scrape;
-                                 surfaces stores the official site has that
-                                 Mappedin's venue map is missing (see reconcile.py)
+  POST /api/reconcile {venue}-> fresh primary-source pull vs a live scrape of the
+                                 mall's own directory page; surfaces differences in
+                                 BOTH directions (see reconcile.py)
 
 Run history is persisted via storage.py: Postgres when DATABASE_URL is set
 (Render), else local JSON files (dev). That history is the log — nothing is
@@ -87,7 +87,8 @@ def api_runs():
             "added": len(ch.get("added", [])),
             "removed": len(ch.get("removed", [])),
             "moved": len(ch.get("moved", [])),
-            "missing": len(rec.get("missing_from_mappedin", [])) if rec else 0,
+            "missing": len(rec.get("missing_from_api", [])) if rec else 0,
+            "extra": len(rec.get("extra_in_api", [])) if rec else 0,
         })
     metas.reverse()  # newest first
     return jsonify(metas)
@@ -141,7 +142,7 @@ def api_run_stream():
     can narrate every stage live instead of showing an opaque spinner.
 
     GET (not POST) because EventSource only does GET. Runs the full pipeline:
-      Mappedin snapshot -> save -> diff vs previous -> reconcile vs mall site.
+      primary-source snapshot -> save -> diff vs previous -> reconcile vs mall site.
     Reconciliation is best-effort: if it's unconfigured or the bot wall wins,
     the snapshot is still saved and returned. It's a trust layer, not a gate.
     """
@@ -210,23 +211,25 @@ def api_run_stream():
                              else f"Found {n} change(s) since the last run.")
 
                 # --- Source B: the mall's own website (trust layer) ------
-                # Simon-specific (compares against Mappedin) — not applicable
-                # to Mapplic/MoA malls, whose own directory data IS already
-                # the mall's own site data.
+                # Cross-checks the primary snapshot against a live scrape of
+                # the mall's own directory page, in BOTH directions — catches
+                # stores the primary source is missing AND non-store entries
+                # (rides, parking, offices, etc.) the primary source over-includes.
                 recon = None
-                if is_moa or is_mapplic:
-                    progress("reconcile", "Cross-check not applicable for this mall — skipped.")
-                elif reconcile_mod.available():
+                if reconcile_mod.available():
                     emit("phase", phase="reconcile", title="Cross-checking against the mall's website", ms=ms())
                     try:
                         recon = reconcile_mod.reconcile(stores, venue, on_progress=progress)
                         recon["checked_at"] = mallcore.to_ist_display(utc)
                         if recon["in_sync"]:
-                            progress("reconcile", "Both sources agree — nothing missing.", level="good")
+                            progress("reconcile", "Both sources agree — nothing missing or extra.", level="good")
                         else:
-                            progress("reconcile",
-                                     f"{len(recon['missing_from_mappedin'])} store(s) on the website "
-                                     f"aren't in the map data.", level="warn")
+                            bits = []
+                            if recon["missing_from_api"]:
+                                bits.append(f"{len(recon['missing_from_api'])} on the website but not in the data")
+                            if recon["extra_in_api"]:
+                                bits.append(f"{len(recon['extra_in_api'])} in the data but not on the website")
+                            progress("reconcile", " · ".join(bits) + ".", level="warn")
                     except reconcile_mod.BotWallError as e:
                         recon = {"blocked": True, "error": str(e)}
                         progress("reconcile", "Blocked by the website's bot check. Snapshot is still "
@@ -280,27 +283,26 @@ def api_reconcile():
     body = request.get_json(silent=True) or {}
     venue = body.get("venue") or load_venues()[0]
 
-    if mallcore.is_mapplic_venue(venue) or mallcore.is_moa_venue(venue):
-        return jsonify({
-            "error": "Cross-check reconciliation isn't available for this mall "
-                     "(only Simon/Mappedin venues) — its own directory data is already the source of truth."
-        }), 501
-
-    # Always compare against a FRESH Mappedin pull, not the last saved run —
-    # this is a "right now vs right now" check, not a diff against history.
+    # Always compare against a FRESH primary-source pull, not the last saved
+    # run — this is a "right now vs right now" check, not a diff against history.
     try:
-        mappedin_stores = mallcore.parse_mappedin_venue(venue)
+        if mallcore.is_moa_venue(venue):
+            api_stores = mallcore.parse_moa_venue(venue)
+        elif mallcore.is_mapplic_venue(venue):
+            api_stores = mallcore.parse_mapplic_venue(venue)
+        else:
+            api_stores = mallcore.parse_mappedin_venue(venue)
     except Exception as e:
-        return jsonify({"error": f"Mappedin pull failed for '{venue}': {e}"}), 502
+        return jsonify({"error": f"Primary-source pull failed for '{venue}': {e}"}), 502
 
     try:
-        result = reconcile_mod.reconcile(mappedin_stores, venue)
+        result = reconcile_mod.reconcile(api_stores, venue)
     except reconcile_mod.BotWallError as e:
         # Transient: the mall's bot challenge blocked us. Distinct from a real
         # failure — 503 + retryable so the UI can say "try again", not "broken".
         return jsonify({"error": str(e), "retryable": True}), 503
     except Exception as e:
-        return jsonify({"error": f"Simon-site reconciliation check failed: {e}"}), 502
+        return jsonify({"error": f"Directory-site reconciliation check failed: {e}"}), 502
 
     result["checked_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return jsonify(result)

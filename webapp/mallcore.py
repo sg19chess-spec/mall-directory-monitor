@@ -12,10 +12,12 @@ fallback in server.py — keep this module dependency-free.
 import os
 import re
 import io
+import csv
 import json
 import zipfile
 import urllib.request
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 try:
     from zoneinfo import ZoneInfo
@@ -45,9 +47,38 @@ def to_ist_display(utc_iso: str | None) -> str:
     return dt.strftime("%d %b %Y, %I:%M %p IST")
 
 
+def _prettify_domain(netloc: str) -> str:
+    """'friendlycenter.com' -> 'Friendly Center'. Generic heuristic (no
+    per-mall hardcoding): split the domain's first label, then insert a
+    space before a trailing mall-type word if one is glued onto it."""
+    label = netloc.removeprefix("www.").split(".")[0]
+    label = re.sub(
+        r"(center|centre|mall|outlets?|square|commons|crossing|corner|market|place|plaza|towne?|village)$",
+        r" \1", label, flags=re.IGNORECASE,
+    )
+    return " ".join(w.capitalize() for w in label.split())
+
+
 def venue_info(venue: str) -> dict:
-    """Human-facing metadata for a venue slug, incl. links back to the mall's
-    own site so the dashboard can always point at its source of truth."""
+    """Human-facing metadata for a venue, incl. links back to the mall's own
+    site so the dashboard can always point at its source of truth.
+
+    Two venue shapes are supported:
+      - a Simon/Mappedin slug, e.g. "simon-albertville"
+      - a full directory-page URL for a Mapplic-powered mall,
+        e.g. "https://www.friendlycenter.com/directory"
+    """
+    if venue.startswith("http"):
+        parsed = urlparse(venue)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        return {
+            "slug": venue,
+            "name": _prettify_domain(parsed.netloc),
+            "site": base,
+            "stores_url": venue,
+            "map_url": venue,
+        }
+
     outlet = venue.split("-", 1)[1] if venue.startswith("simon-") else venue
     pretty = " ".join(w.capitalize() for w in outlet.replace("_", "-").split("-"))
     base = f"https://www.premiumoutlets.com/outlet/{outlet}"
@@ -170,6 +201,92 @@ def parse_mappedin_venue(venue: str, on_progress=None) -> list[dict]:
             "status": status_by_name.get(name, "Open"),
         })
     return stores
+
+
+# --- Mapplic path (Friendly Center & other Mapplic-powered malls) -----------
+#
+# Mapplic embeds a `data-json="https://mapplic.com/getMapData?id=..."`
+# attribute on the map container; that JSON in turn references a
+# `settings.csv` asset URL holding the ENTIRE tenant directory as a flat
+# CSV. No bot challenge, no per-store fetching.
+
+def mapplic_getmapdata_url_from_page(url: str) -> str | None:
+    """Fetch a page's raw HTML and look for its Mapplic map embed URL.
+    Returns None if the page isn't Mapplic-powered."""
+    try:
+        html = _http_get(url, headers={"User-Agent": "Mozilla/5.0"}).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    m = re.search(r'(https://mapplic\.com/getMapData\?id=[A-Za-z0-9_-]+)', html)
+    return m.group(1) if m else None
+
+
+def parse_mapplic_venue(url: str, on_progress=None) -> list[dict]:
+    """Full store directory for a Mapplic-powered mall's directory page URL.
+
+    Columns seen (Friendly Center): "Property Name","id","title","link",
+    "about","desc","image","layer","style","disable","hide","group","sample"
+    - disable=="TRUE" or title=="VACANT" -> not a real tenant, skip.
+    - group is a comma-separated tag list; doubles as category and carries
+      status tags like "Coming Soon" / "Now Open" / "Temporarily Closed".
+    - id is the map's own unit code (e.g. "u103").
+    """
+    def p(step, msg, **extra):
+        if on_progress:
+            on_progress(step, msg, **extra)
+
+    p("locations", "Looking for the mall's Mapplic map embed…")
+    getmapdata_url = mapplic_getmapdata_url_from_page(url)
+    if not getmapdata_url:
+        raise RuntimeError(f"No Mapplic map embed found on {url}")
+
+    p("locations", "Fetching the map's config…")
+    map_data = json.loads(_http_get(getmapdata_url, headers={"User-Agent": "Mozilla/5.0"}))
+    csv_url = (map_data.get("settings") or {}).get("csv")
+    if not csv_url:
+        raise RuntimeError("Mapplic map data has no settings.csv URL")
+
+    p("locations", "Downloading the tenant directory CSV…")
+    csv_bytes = _http_get(csv_url, headers={"User-Agent": "Mozilla/5.0"})
+    rows = csv.DictReader(io.StringIO(csv_bytes.decode("utf-8-sig")))
+
+    status_tags = ("Coming Soon", "Now Open", "Temporarily Closed")
+    stores = []
+    for row in rows:
+        title = (row.get("title") or "").strip()
+        if not title or title.upper() == "VACANT":
+            continue
+        if (row.get("disable") or "").strip().upper() == "TRUE":
+            continue
+
+        tags = [t.strip() for t in (row.get("group") or "").split(",") if t.strip()]
+        status = next((t for t in tags if t in status_tags), "Open")
+        category = ", ".join(t for t in tags if t not in status_tags) or None
+
+        stores.append({
+            "name": title,
+            "slug": (row.get("link") or "").strip() or None,
+            "floor": None,
+            "location_in_outlet": (row.get("id") or "").strip() or None,
+            "category": category,
+            "status": status,
+        })
+    stores.sort(key=lambda x: x["name"])
+    p("locations", f"Got {len(stores)} stores from the CSV directory.", count=len(stores))
+    return stores
+
+
+def is_mapplic_venue(venue: str) -> bool:
+    """Venue-shape check: a full URL means Mapplic; a bare slug means Simon/
+    Mappedin. Used by the webapp to route to the right parser."""
+    return venue.startswith("http")
+
+
+def venue_id_component(venue: str) -> str:
+    """Filesystem/id-safe form of a venue for building run IDs. Simon slugs
+    already are; a full URL (Mapplic venues) contains '/' and ':' which would
+    otherwise break the local-file storage backend's filenames."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", venue).strip("_")
 
 
 # --- diff -------------------------------------------------------------------

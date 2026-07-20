@@ -161,6 +161,11 @@ def parse_mappedin_venue(venue: str, on_progress=None) -> list[dict]:
         for loc in locations
         if loc.get("type") == "store" and loc.get("name")
     }
+    raw_by_name: dict[str, dict] = {
+        loc.get("name"): loc
+        for loc in locations
+        if loc.get("type") == "store" and loc.get("name")
+    }
     store_names = set(status_by_name)
     if not store_names:
         raise RuntimeError(f"Mappedin returned no stores for venue '{venue}'")
@@ -210,6 +215,7 @@ def parse_mappedin_venue(venue: str, on_progress=None) -> list[dict]:
             "name": name, "slug": None, "floor": unit,
             "location_in_outlet": unit, "category": None,
             "status": status_by_name.get(name, "Open"),
+            "raw": raw_by_name.get(name),
         })
     return stores
 
@@ -281,6 +287,7 @@ def parse_mapplic_venue(url: str, on_progress=None) -> list[dict]:
             "location_in_outlet": (row.get("id") or "").strip() or None,
             "category": category,
             "status": status,
+            "raw": dict(row),
         })
     stores.sort(key=lambda x: x["name"])
     p("locations", f"Got {len(stores)} stores from the CSV directory.", count=len(stores))
@@ -342,6 +349,11 @@ def parse_moa_venue(venue: str | None = None, on_progress=None) -> list[dict]:
             "location_in_outlet": loc.get("unit_number"),
             "category": ", ".join(c["name"] for c in t.get("categories", []) if c.get("name")) or None,
             "status": "Open" if status_name == "Normal" else status_name,
+            # Kept raw (minus the heavy media/hours blobs) so the dashboard can
+            # facet-filter on fields we don't normalize, e.g. `type` — this is
+            # what distinguishes real Retail/Dining/Attraction tenants from
+            # rides, parking, offices, and facilities that the API also lists.
+            "raw": {k: v for k, v in t.items() if k not in ("media", "hours")},
         })
 
     stores.sort(key=lambda x: x["name"])

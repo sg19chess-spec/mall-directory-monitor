@@ -49,8 +49,9 @@
   .dot { width:3px; height:3px; border-radius:50%; background:var(--muted); opacity:.6; }
 
   /* ---------- stat tiles ---------- */
-  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:.7rem; margin:1.25rem 0; }
-  @media (max-width:660px) { .stats { grid-template-columns:repeat(2, 1fr); } }
+  .stats { display:grid; grid-template-columns:repeat(5, 1fr); gap:.7rem; margin:1.25rem 0; }
+  @media (max-width:780px) { .stats { grid-template-columns:repeat(3, 1fr); } }
+  @media (max-width:480px) { .stats { grid-template-columns:repeat(2, 1fr); } }
   .tile { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
           padding:.85rem .95rem; box-shadow:var(--shadow); }
   .tile .k { font-size:.68rem; text-transform:uppercase; letter-spacing:.06em;
@@ -150,6 +151,21 @@
   .thead-row { display:flex; justify-content:space-between; align-items:center; gap:.6rem;
                flex-wrap:wrap; margin-bottom:.6rem; }
   .err { color:var(--bad); font-size:.86rem; }
+
+  /* ---------- facets ---------- */
+  .facets { display:flex; flex-wrap:wrap; gap:1.1rem; margin:.2rem 0 .9rem; }
+  .facet-group { min-width:140px; }
+  .facet-group h5 { margin:0 0 .3rem; font-size:.66rem; text-transform:uppercase;
+                    letter-spacing:.06em; color:var(--muted); font-weight:700; }
+  .facet-opt { display:flex; align-items:center; gap:.4rem; font-size:.82rem; margin:.15rem 0; }
+  .facet-opt input { margin:0; }
+  .facet-opt .n { color:var(--muted); font-size:.76rem; }
+  button.ghost { font:inherit; font-weight:600; font-size:.8rem; color:var(--accent);
+                 background:transparent; border:1px solid var(--line); border-radius:8px;
+                 padding:.4rem .7rem; cursor:pointer; }
+  button.ghost:hover { background:var(--accent-soft); }
+  td.onsite { text-align:center; }
+  .pill.extra { background:var(--warn-soft); color:var(--warn); }
 </style>
 </head>
 <body>
@@ -171,7 +187,8 @@
     <div class="tile"><div class="k">Stores</div><div class="v" id="sTotal">—</div></div>
     <div class="tile"><div class="k">Open</div><div class="v good" id="sOpen">—</div></div>
     <div class="tile"><div class="k">Coming soon</div><div class="v warn" id="sSoon">—</div></div>
-    <div class="tile"><div class="k">Missing from map</div><div class="v" id="sMiss">—</div></div>
+    <div class="tile"><div class="k">Missing from data</div><div class="v" id="sMiss">—</div></div>
+    <div class="tile"><div class="k">Extra in data</div><div class="v" id="sExtra">—</div></div>
   </div>
 
   <div class="actionbar">
@@ -236,8 +253,12 @@
   <div class="card">
     <div class="thead-row">
       <h2 style="margin:0">Store directory</h2>
-      <input class="filter" id="filter" type="search" placeholder="Filter stores…" aria-label="Filter stores">
+      <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
+        <input class="filter" id="filter" type="search" placeholder="Filter stores…" aria-label="Filter stores">
+        <button class="ghost" id="downloadBtn" type="button">Download filtered (CSV)</button>
+      </div>
     </div>
+    <div class="facets" id="facets"></div>
     <div id="tableWrap"><p class="empty">No data yet — press <b>Run check</b>.</p></div>
   </div>
 
@@ -251,6 +272,18 @@ const unitOf = s => s.location_in_outlet || s.floor || "—";
 const floorOf = s => s.floor ?? "—";
 
 let current = null, venues = [], running = false;
+let facetSelections = null;   // { group: Set(values currently INCLUDED) } — null = not built yet
+let filteredRows = [];        // last rendered (text+facet filtered) rows, for CSV export
+
+function rawType(s) {
+  const t = s.raw && s.raw.type;
+  if (t == null) return null;
+  if (Array.isArray(t)) return t.map(x => (x && x.name) || x).join(", ");
+  return String(t);
+}
+function categoryTags(s) {
+  return String(s.category || "").split(",").map(c => c.trim()).filter(Boolean);
+}
 
 async function api(p, o) {
   const r = await fetch(p, o);
@@ -313,7 +346,8 @@ function render(doc) {
   const open = stores.filter(s => s.status === "Open").length;
   const soon = stores.length - open;
   const rec  = doc.reconciliation || null;
-  const miss = (rec && rec.missing_from_mappedin) ? rec.missing_from_mappedin.length : null;
+  const miss  = (rec && rec.missing_from_api) ? rec.missing_from_api.length : null;
+  const extra = (rec && rec.extra_in_api)     ? rec.extra_in_api.length     : null;
 
   $("#sTotal").textContent = stores.length;
   $("#sOpen").textContent  = open;
@@ -321,26 +355,30 @@ function render(doc) {
   const mEl = $("#sMiss");
   mEl.textContent = (rec && rec.blocked) ? "?" : (miss == null ? "—" : miss);
   mEl.className = "v " + (miss ? "bad" : (miss === 0 ? "good" : ""));
+  const xEl = $("#sExtra");
+  xEl.textContent = (rec && rec.blocked) ? "?" : (extra == null ? "—" : extra);
+  xEl.className = "v " + (extra ? "warn" : (extra === 0 ? "good" : ""));
   $("#lastRun").textContent = "Last checked " + (doc.generated || "—");
 
-  renderVerdict(doc, rec, miss);
+  facetSelections = null;   // new run/venue: reset facet picks, keep text filter
+  renderVerdict(doc, rec, miss, extra);
   renderChanges(doc.changes);
   renderTable(stores, rec);
 }
 
-function renderVerdict(doc, rec, miss) {
+function renderVerdict(doc, rec, miss, extra) {
   const card = $("#verdictCard"); card.style.display = "block";
   const el = $("#verdict");
   if (!rec) {
     el.innerHTML = `<div class="verdict warn"><span class="ico">•</span><div>
-      Snapshot saved, but <b>no cross-check ran</b>, so we can't confirm the map data is complete.</div></div>`;
+      Snapshot saved, but <b>no cross-check ran</b>, so we can't confirm the data is complete.</div></div>`;
     return;
   }
   if (rec.blocked) {
     el.innerHTML = `<div class="verdict warn"><span class="ico">⚠</span><div>
       <b>Cross-check couldn't run</b> — the mall's website blocked our request with its bot check.
       The ${doc.stores.length} stores below are still accurate as of this run; we just couldn't
-      independently confirm nothing is missing. Try again in a bit.</div></div>`;
+      independently confirm the list is complete. Try again in a bit.</div></div>`;
     return;
   }
   if (rec.error) {
@@ -348,18 +386,23 @@ function renderVerdict(doc, rec, miss) {
       <b>Cross-check failed:</b> ${esc(rec.error)}</div></div>`;
     return;
   }
-  if (miss === 0) {
+  if (miss === 0 && extra === 0) {
     el.innerHTML = `<div class="verdict good"><span class="ico">✓</span><div>
-      <b>Both sources agree.</b> All ${rec.simon_count} stores on the mall's website are present
-      in the map data. (This confirms the store <i>list</i> is complete — it doesn't verify unit numbers.)</div></div>`;
+      <b>Both sources agree.</b> All ${rec.site_count} stores on the mall's website match the
+      ${rec.api_count} in our data — nothing missing, nothing extra.</div></div>`;
     return;
   }
+  const bits = [];
+  if (miss) bits.push(`<b>${miss} on the website but missing from our data</b> — usually a store
+    that's leased and announced but not yet reflected in the primary source:
+    <ul>${rec.missing_from_api.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`);
+  if (extra) bits.push(`<b>${extra} in our data but not on the website</b> — often non-store
+    entries (rides, parking, back-offices, facilities) that a raw API includes but the public
+    directory doesn't list. Use the filters below to decide which to keep:
+    <ul>${rec.extra_in_api.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`);
   el.innerHTML = `<div class="verdict warn"><span class="ico">⚠</span><div>
-    <b>${miss} store(s) missing from the map data.</b>
-    The mall's website lists <b>${rec.simon_count}</b> stores but the map only has <b>${rec.mappedin_count}</b>.
-    These are usually stores that are leased and announced but not yet drawn onto the floor plan —
-    so they have no unit number yet:
-    <ul>${rec.missing_from_mappedin.map(n=>`<li>${esc(n)}</li>`).join("")}</ul></div></div>`;
+    The website lists <b>${rec.site_count}</b> stores, our data has <b>${rec.api_count}</b>.
+    ${bits.join("")}</div></div>`;
 }
 
 function renderChanges(ch) {
@@ -377,25 +420,117 @@ function renderChanges(ch) {
   el.innerHTML = h;
 }
 
+function buildRows(stores, rec) {
+  // Show website-only stores inline too, so the table matches the mall's real roster.
+  const missing = (rec && rec.missing_from_api) ? rec.missing_from_api : [];
+  const extraNames = new Set((rec && rec.extra_in_api) ? rec.extra_in_api : []);
+  return [
+    ...stores.map(s => ({
+      name: s.name, unit: unitOf(s), floor: floorOf(s), status: s.status || "Open",
+      category: s.category || "", type: rawType(s) || "",
+      missing: false, onsite: extraNames.has(s.name) ? "extra" : (rec ? "ok" : "unknown"),
+    })),
+    ...missing.map(n => ({
+      name: n, unit: "—", floor: "—", status: "Not in data",
+      category: "", type: "", missing: true, onsite: "ok",
+    })),
+  ];
+}
+
+function facetGroups(allRows) {
+  const groups = { Category: new Map(), Status: new Map(), Type: new Map() };
+  for (const r of allRows) {
+    for (const tag of (r.category ? r.category.split(",").map(c=>c.trim()).filter(Boolean) : ["(none)"]))
+      groups.Category.set(tag, (groups.Category.get(tag) || 0) + 1);
+    groups.Status.set(r.status, (groups.Status.get(r.status) || 0) + 1);
+    if (r.type) groups.Type.set(r.type, (groups.Type.get(r.type) || 0) + 1);
+  }
+  if (!groups.Type.size) delete groups.Type;
+  return groups;
+}
+
+function renderFacetUI(groups) {
+  const el = $("#facets");
+  el.innerHTML = Object.entries(groups).map(([group, counts]) => {
+    const opts = [...counts.entries()].sort((a,b) => b[1]-a[1]).map(([val, n]) => {
+      const checked = facetSelections[group].has(val) ? "checked" : "";
+      const id = `f-${group}-${val}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+      return `<label class="facet-opt" for="${id}"><input type="checkbox" id="${id}"
+        data-group="${esc(group)}" data-val="${esc(val)}" ${checked}>${esc(val)}
+        <span class="n">${n}</span></label>`;
+    }).join("");
+    return `<div class="facet-group"><h5>${esc(group)}</h5>${opts}</div>`;
+  }).join("");
+  el.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const group = cb.dataset.group, val = cb.dataset.val;
+      if (cb.checked) facetSelections[group].add(val); else facetSelections[group].delete(val);
+      if (current) renderTable(current.stores || [], current.reconciliation);
+    });
+  });
+}
+
+function passesFacets(r) {
+  if (!facetSelections) return true;
+  const cats = r.category ? r.category.split(",").map(c=>c.trim()).filter(Boolean) : ["(none)"];
+  if (facetSelections.Category && !cats.some(c => facetSelections.Category.has(c))) return false;
+  if (facetSelections.Status && !facetSelections.Status.has(r.status)) return false;
+  if (facetSelections.Type && r.type && !facetSelections.Type.has(r.type)) return false;
+  return true;
+}
+
 function renderTable(stores, rec) {
   const q = $("#filter").value.trim().toLowerCase();
-  // Show website-only stores inline too, so the table matches the mall's real roster.
-  const missing = (rec && rec.missing_from_mappedin) ? rec.missing_from_mappedin : [];
-  const rows = [
-    ...stores.map(s => ({ name:s.name, unit:unitOf(s), floor:floorOf(s), status:s.status || "Open", missing:false })),
-    ...missing.map(n => ({ name:n, unit:"—", floor:"—", status:"Not on map", missing:true })),
-  ]
+  const allRows = buildRows(stores, rec);
+
+  const groups = facetGroups(allRows);
+  if (!facetSelections) {
+    // Fresh selection state: everything included by default.
+    facetSelections = {};
+    for (const [group, counts] of Object.entries(groups)) facetSelections[group] = new Set(counts.keys());
+  }
+  renderFacetUI(groups);
+
+  const rows = allRows
     .filter(r => !q || r.name.toLowerCase().includes(q) || String(r.unit).toLowerCase().includes(q)
                     || String(r.floor).toLowerCase().includes(q))
-    .sort((a,b) => a.name.localeCompare(b.name))
-    .map(r => {
-      const cls = r.missing ? "pill miss" : (r.status === "Open" ? "pill open" : "pill soon");
-      return `<tr><td>${esc(r.name)}</td><td class="unit">${esc(r.floor)}</td><td class="unit">${esc(r.unit)}</td>` +
-             `<td><span class="${cls}">${esc(r.status)}</span></td></tr>`;
-    }).join("");
-  $("#tableWrap").innerHTML = rows
-    ? `<table><thead><tr><th>Store</th><th>Floor</th><th>Unit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`
-    : `<p class="empty">No stores match “${esc(q)}”.</p>`;
+    .filter(passesFacets)
+    .sort((a,b) => a.name.localeCompare(b.name));
+  filteredRows = rows;
+
+  const html = rows.map(r => {
+    const cls = r.missing ? "pill miss" : (r.status === "Open" ? "pill open" : "pill soon");
+    const onsiteMark = r.onsite === "extra" ? '<span class="pill extra">✕ not on site</span>'
+      : r.onsite === "ok" ? "✓" : "—";
+    return `<tr><td>${esc(r.name)}</td><td class="unit">${esc(r.floor)}</td><td class="unit">${esc(r.unit)}</td>` +
+           `<td><span class="${cls}">${esc(r.status)}</span></td><td class="onsite">${onsiteMark}</td></tr>`;
+  }).join("");
+  $("#tableWrap").innerHTML = html
+    ? `<table><thead><tr><th>Store</th><th>Floor</th><th>Unit</th><th>Status</th><th>On site?</th></tr></thead><tbody>${html}</tbody></table>`
+    : `<p class="empty">No stores match the current filters.</p>`;
+}
+
+/* ---------- CSV export (filtered rows only) ---------- */
+function toCSV(rows) {
+  const headers = ["Store", "Floor", "Unit", "Status", "Category", "Type", "On site"];
+  const esc_ = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [headers.map(esc_).join(",")];
+  for (const r of rows) {
+    const onsite = r.onsite === "extra" ? "Not on site" : r.onsite === "ok" ? "Yes" : "Unknown";
+    lines.push([r.name, r.floor, r.unit, r.status, r.category, r.type, onsite].map(esc_).join(","));
+  }
+  return lines.join("\r\n");
+}
+function downloadCSV() {
+  if (!filteredRows.length) return;
+  const venue = venueInfo().name || "mall";
+  const stamp = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([toCSV(filteredRows)], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${venue.replace(/[^a-z0-9]+/gi, "-")}-directory-${stamp}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ---------- the one button ---------- */
@@ -459,6 +594,7 @@ $("#venue").addEventListener("change", async () => { paintVenue(); await loadRun
 $("#filter").addEventListener("input", () => {
   if (current) renderTable(current.stores || [], current.reconciliation);
 });
+$("#downloadBtn").addEventListener("click", downloadCSV);
 
 (async () => {
   try { await loadVenues(); await loadRuns(); }
